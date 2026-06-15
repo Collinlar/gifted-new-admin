@@ -49,14 +49,21 @@ function parseDetails(raw: unknown): AttemptDetail[] {
 
 function ScoreBadge({ score, total }: { score?: number; total?: number }) {
   if (score === undefined) return <span className="text-muted text-xs">—</span>;
-  const pct = total ? Math.round((score / total) * 100) : null;
-  const color = pct === null ? "bg-surface text-ink border-border"
+  // When score > totalQuestions the quiz uses weighted points (e.g. 4pts per question).
+  // In that case showing "44/25" is misleading — display just the points tally instead.
+  const isWeighted = total !== undefined && score > total;
+  const pct = (!isWeighted && total) ? Math.round((score / total) * 100) : null;
+  const color = pct === null
+    ? (score === 0 ? "bg-red-50 text-red-600 border-red-100" : "bg-surface text-ink border-border")
     : pct >= 70 ? "bg-emerald-50 text-emerald-700 border-emerald-100"
     : pct >= 50 ? "bg-amber-50 text-amber-700 border-amber-100"
     : "bg-red-50 text-red-600 border-red-100";
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-semibold border ${color}`}>
-      {score}{total ? `/${total}` : ""}
+      {isWeighted
+        ? <>{score} <span className="ml-0.5 font-normal opacity-60">pts</span></>
+        : <>{score}{total ? `/${total}` : ""}</>
+      }
       {pct !== null && <span className="ml-1 opacity-60">({pct}%)</span>}
     </span>
   );

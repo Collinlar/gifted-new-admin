@@ -719,12 +719,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       start_date: body.startDate,
       end_date: body.endDate,
       year: body.year ? String(body.year) : null,
-      material_cost: body.materialCost || 0,
-      assessment_cost: body.assessmentCost || 0,
+      material_cost: parseFloat(body.materialCost) || 0,
+      assessment_cost: parseFloat(body.assessmentCost) || 0,
       link: body.link,
       customizable_button: body.customizableButton,
       type: body.type || [],
       sub_types: body.subTypes || [],
+      assessments: body.assessments || [],
+      courses: body.courses || [],
     }).select().single();
     if (error) return err(error.message);
     return ok({ program: cam(data) });
@@ -813,6 +815,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     }).select().single();
     if (error) return err(error.message);
     return ok({ interest: cam(data) });
+  }
+
+  // POST /upload-file  — multipart, uploads to Supabase storage, returns public URL
+  if (p0 === "upload-file") {
+    try {
+      const formData = await req.formData();
+      const file = formData.get("file") as File | null;
+      if (!file) return err("No file provided");
+      const ext = file.name.split(".").pop() || "bin";
+      const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const { error: upErr } = await supabase.storage
+        .from("gifted-files")
+        .upload(path, buffer, { contentType: file.type, upsert: false });
+      if (upErr) return err(upErr.message);
+      const { data: urlData } = supabase.storage.from("gifted-files").getPublicUrl(path);
+      return ok({ url: urlData.publicUrl, path });
+    } catch (e) {
+      return err(String(e));
+    }
   }
 
   // POST /add-pathway
@@ -942,14 +964,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   // PUT /update-competition/:id
   if (p0 === "update-competition" && p1) {
     const patch: Record<string, unknown> = {};
-    if (body.name !== undefined) patch.name = body.name;
-    if (body.description !== undefined) patch.description = body.description;
-    if (body.startDate !== undefined) patch.start_date = body.startDate;
-    if (body.endDate !== undefined) patch.end_date = body.endDate;
-    if (body.year !== undefined) patch.year = String(body.year);
-    if (body.materialCost !== undefined) patch.material_cost = body.materialCost;
-    if (body.assessmentCost !== undefined) patch.assessment_cost = body.assessmentCost;
-    if (body.link !== undefined) patch.link = body.link;
+    if (body.name              !== undefined) patch.name               = body.name;
+    if (body.description       !== undefined) patch.description        = body.description;
+    if (body.startDate         !== undefined) patch.start_date         = body.startDate;
+    if (body.endDate           !== undefined) patch.end_date           = body.endDate;
+    if (body.year              !== undefined) patch.year               = String(body.year);
+    if (body.materialCost      !== undefined) patch.material_cost      = parseFloat(body.materialCost) || 0;
+    if (body.assessmentCost    !== undefined) patch.assessment_cost    = parseFloat(body.assessmentCost) || 0;
+    if (body.link              !== undefined) patch.link               = body.link;
+    if (body.customizableButton !== undefined) patch.customizable_button = body.customizableButton;
+    if (body.type              !== undefined) patch.type               = body.type;
+    if (body.subTypes          !== undefined) patch.sub_types          = body.subTypes;
+    if (body.assessments       !== undefined) patch.assessments        = body.assessments;
+    if (body.courses           !== undefined) patch.courses            = body.courses;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("competitions").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
@@ -1000,6 +1027,21 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     const { data, error } = await supabase.from("users").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
     return ok({ user: cam(data) });
+  }
+
+  // PUT /update-flashcard/:id
+  if (p0 === "update-flashcard" && p1) {
+    const patch: Record<string, unknown> = {};
+    if (body.question   !== undefined) patch.question   = body.question;
+    if (body.answer     !== undefined) patch.answer     = body.answer;
+    if (body.difficulty !== undefined) patch.difficulty = body.difficulty;
+    if (body.courseId   !== undefined) patch.course_id  = body.courseId;
+    if (body.publish    !== undefined) patch.publish    = body.publish;
+    if (body.featured   !== undefined) patch.featured   = body.featured;
+    patch.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from("flashcards").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
+    if (error) return err(error.message);
+    return ok({ flashcard: cam(data) });
   }
 
   // PUT /update-pathway/:id

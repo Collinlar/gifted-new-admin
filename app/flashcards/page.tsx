@@ -9,7 +9,7 @@ import Spinner from "@/components/ui/Spinner";
 import SlidePanel from "@/components/ui/SlidePanel";
 import api from "@/lib/api";
 import {
-  Plus, Trash2, ChevronDown, ChevronUp, BookOpen, Zap, Download,
+  Plus, Trash2, ChevronDown, ChevronUp, BookOpen, Zap, Download, Edit2, Check, X, Eye, EyeOff, Star,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -20,8 +20,12 @@ interface FlashCard {
   difficulty?: string;
   courseId?: string;
   courseTitle?: string;
+  publish?: boolean;
+  featured?: boolean;
   createdAt?: string;
 }
+
+interface EditDraft { question: string; answer: string; difficulty: string; }
 
 interface CourseGroup {
   courseId: string;
@@ -69,11 +73,15 @@ export default function FlashCardsPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
 
-  // Form state
+  // Add form state
   const [selectedCourse, setSelectedCourse] = useState("");
   const [drafts, setDrafts] = useState<CardDraft[]>([{ question: "", answer: "", difficulty: "Medium" }]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<EditDraft>({ question: "", answer: "", difficulty: "Medium" });
 
   const load = useCallback(async () => {
     try {
@@ -119,6 +127,49 @@ export default function FlashCardsPage() {
       const next = prev.filter((c) => c._id !== id);
       setGroups(groupByourse(next));
       return next;
+    });
+  };
+
+  const startEdit = (c: FlashCard) => {
+    setEditingId(c._id);
+    setEditDraft({ question: c.question || "", answer: c.answer || "", difficulty: c.difficulty || "Medium" });
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    setSaving(true);
+    try {
+      await api.put(`/update-flashcard/${editingId}`, editDraft);
+      setCards((prev) => {
+        const next = prev.map((c) => c._id === editingId ? { ...c, ...editDraft } : c);
+        setGroups(groupByourse(next));
+        return next;
+      });
+      setEditingId(null);
+    } catch { /* silent */ } finally {
+      setSaving(false);
+    }
+  };
+
+  const togglePublish = async (card: FlashCard) => {
+    const next = !card.publish;
+    await api.put(`/update-flashcard/${card._id}`, { publish: next });
+    setCards((prev) => {
+      const updated = prev.map((c) => c._id === card._id ? { ...c, publish: next } : c);
+      setGroups(groupByourse(updated));
+      return updated;
+    });
+  };
+
+  const toggleFeatured = async (card: FlashCard) => {
+    const next = !card.featured;
+    await api.put(`/update-flashcard/${card._id}`, { featured: next });
+    setCards((prev) => {
+      const updated = prev.map((c) => c._id === card._id ? { ...c, featured: next } : c);
+      setGroups(groupByourse(updated));
+      return updated;
     });
   };
 
@@ -199,10 +250,12 @@ export default function FlashCardsPage() {
               {groups.map((group) => {
                 const isOpen = expanded.has(group.courseId);
                 const diffCounts = { Easy: 0, Medium: 0, Hard: 0 };
+                let publishedCount = 0;
                 group.cards.forEach((c) => {
                   const d = c.difficulty || "Medium";
                   const key = d.charAt(0).toUpperCase() + d.slice(1).toLowerCase() as keyof typeof diffCounts;
                   if (key in diffCounts) diffCounts[key]++;
+                  if (c.publish) publishedCount++;
                 });
 
                 return (
@@ -218,7 +271,12 @@ export default function FlashCardsPage() {
                         </div>
                         <div className="text-left">
                           <p className="font-semibold text-ink text-sm">{group.courseTitle}</p>
-                          <p className="text-xs text-muted mt-0.5">{group.cards.length} card{group.cards.length !== 1 ? "s" : ""}</p>
+                          <p className="text-xs text-muted mt-0.5">
+                          {group.cards.length} card{group.cards.length !== 1 ? "s" : ""}
+                          {publishedCount > 0 && (
+                            <span className="ml-2 text-emerald-600">{publishedCount} published</span>
+                          )}
+                        </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -248,31 +306,80 @@ export default function FlashCardsPage() {
                     {isOpen && (
                       <div className="border-t border-border divide-y divide-border">
                         {group.cards.map((c, i) => (
-                          <div key={c._id} className="px-5 py-3.5 flex items-start gap-4 hover:bg-surface/30 transition-colors">
-                            <span className="text-xs text-muted mt-0.5 w-5 shrink-0 text-right">{i + 1}</span>
-                            <div className="flex-1 grid grid-cols-2 gap-4 min-w-0">
-                              <div>
-                                <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Question</p>
-                                <p className="text-sm text-ink">{c.question || "—"}</p>
+                          <div key={c._id} className="px-5 py-3.5 hover:bg-surface/30 transition-colors">
+                            {editingId === c._id ? (
+                              <div className="space-y-3">
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                    <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Question</label>
+                                    <textarea value={editDraft.question} onChange={(e) => setEditDraft((d) => ({ ...d, question: e.target.value }))}
+                                      rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
+                                  </div>
+                                  <div>
+                                    <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Answer</label>
+                                    <textarea value={editDraft.answer} onChange={(e) => setEditDraft((d) => ({ ...d, answer: e.target.value }))}
+                                      rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <select value={editDraft.difficulty} onChange={(e) => setEditDraft((d) => ({ ...d, difficulty: e.target.value }))}
+                                    className={`text-xs font-medium border rounded-lg px-2 py-1 focus:outline-none ${diffColor(editDraft.difficulty)}`}>
+                                    {DIFFICULTIES.map((d) => <option key={d} value={d}>{d}</option>)}
+                                  </select>
+                                  <button onClick={saveEdit} disabled={saving}
+                                    className="flex items-center gap-1 text-xs px-3 py-1.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors">
+                                    <Check size={12} /> {saving ? "Saving..." : "Save"}
+                                  </button>
+                                  <button onClick={cancelEdit}
+                                    className="flex items-center gap-1 text-xs px-3 py-1.5 border border-border text-muted rounded-lg hover:text-ink transition-colors">
+                                    <X size={12} /> Cancel
+                                  </button>
+                                </div>
                               </div>
-                              <div>
-                                <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Answer</p>
-                                <p className="text-sm text-ink">{c.answer || "—"}</p>
+                            ) : (
+                              <div className="flex items-start gap-4">
+                                <span className="text-xs text-muted mt-0.5 w-5 shrink-0 text-right">{i + 1}</span>
+                                <div className="flex-1 grid grid-cols-2 gap-4 min-w-0">
+                                  <div>
+                                    <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Question</p>
+                                    <p className="text-sm text-ink">{c.question || "—"}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Answer</p>
+                                    <p className="text-sm text-ink">{c.answer || "—"}</p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {c.difficulty && (
+                                    <span className={`px-2 py-0.5 rounded-lg text-xs font-medium border ${diffColor(c.difficulty)}`}>
+                                      {c.difficulty}
+                                    </span>
+                                  )}
+                                  <button
+                                    onClick={() => toggleFeatured(c)}
+                                    title={c.featured ? "Remove from featured" : "Mark as featured"}
+                                    className={`p-1.5 rounded-lg transition-colors ${c.featured ? "text-amber-500 bg-amber-50 hover:bg-amber-100" : "text-subtle hover:text-amber-500 hover:bg-amber-50"}`}
+                                  >
+                                    <Star size={13} fill={c.featured ? "currentColor" : "none"} />
+                                  </button>
+                                  <button
+                                    onClick={() => togglePublish(c)}
+                                    title={c.publish ? "Unpublish" : "Publish"}
+                                    className={`p-1.5 rounded-lg transition-colors ${c.publish ? "text-emerald-600 bg-emerald-50 hover:bg-emerald-100" : "text-subtle hover:text-emerald-600 hover:bg-emerald-50"}`}
+                                  >
+                                    {c.publish ? <Eye size={13} /> : <EyeOff size={13} />}
+                                  </button>
+                                  <button onClick={() => startEdit(c)}
+                                    className="p-1.5 rounded-lg text-subtle hover:text-ink hover:bg-surface transition-colors">
+                                    <Edit2 size={13} />
+                                  </button>
+                                  <button onClick={() => handleDelete(c._id)}
+                                    className="p-1.5 rounded-lg text-subtle hover:text-danger hover:bg-red-50 transition-colors">
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {c.difficulty && (
-                                <span className={`px-2 py-0.5 rounded-lg text-xs font-medium border ${diffColor(c.difficulty)}`}>
-                                  {c.difficulty}
-                                </span>
-                              )}
-                              <button
-                                onClick={() => handleDelete(c._id)}
-                                className="p-1.5 rounded-lg text-subtle hover:text-danger hover:bg-red-50 transition-colors"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
+                            )}
                           </div>
                         ))}
                       </div>
