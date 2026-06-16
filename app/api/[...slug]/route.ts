@@ -157,6 +157,68 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ courses: rows(data) });
   }
 
+  // GET /all-tracks
+  if (p0 === "all-tracks") {
+    const { data } = await supabase.from("tracks").select("*").order("sort_order", { ascending: true });
+    return ok({ tracks: rows(data) });
+  }
+
+  // GET /trackable-items — every competition/course/exam/camp with the track ids it's tagged into
+  if (p0 === "trackable-items") {
+    const [comps, courses, exams, camps, trackItems] = await Promise.all([
+      supabase.from("competitions").select("id, name").order("name"),
+      supabase.from("courses").select("id, title").order("title"),
+      supabase.from("exams").select("id, title").order("title"),
+      supabase.from("camps").select("id, name").order("name"),
+      supabase.from("track_items").select("track_id, item_type, item_id"),
+    ]);
+
+    const ti = trackItems.data ?? [];
+    const tagsFor = (type: string, id: string) =>
+      ti.filter((t) => t.item_type === type && t.item_id === id).map((t) => t.track_id);
+
+    const items = [
+      ...(comps.data ?? []).map((c) => ({ id: c.id, type: "competition", label: c.name, trackIds: tagsFor("competition", c.id) })),
+      ...(courses.data ?? []).map((c) => ({ id: c.id, type: "course", label: c.title, trackIds: tagsFor("course", c.id) })),
+      ...(exams.data ?? []).map((e) => ({ id: e.id, type: "exam", label: e.title, trackIds: tagsFor("exam", e.id) })),
+      ...(camps.data ?? []).map((c) => ({ id: c.id, type: "camp", label: c.name, trackIds: tagsFor("camp", c.id) })),
+    ];
+
+    return ok({ items });
+  }
+
+  // GET /track-analytics — how many users picked each track, how many registered per camp
+  if (p0 === "track-analytics") {
+    const [tracksRes, userTracksRes, campsRes, campRegsRes] = await Promise.all([
+      supabase.from("tracks").select("id, name").order("sort_order", { ascending: true }),
+      supabase.from("user_tracks").select("track_id"),
+      supabase.from("camps").select("id, name"),
+      supabase.from("camp_registrations").select("camp_id, status"),
+    ]);
+
+    const userTracks = userTracksRes.data ?? [];
+    const trackCounts = (tracksRes.data ?? []).map((t) => ({
+      id: t.id,
+      name: t.name,
+      userCount: userTracks.filter((ut) => ut.track_id === t.id).length,
+    }));
+
+    const campRegs = campRegsRes.data ?? [];
+    const campCounts = (campsRes.data ?? []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      registeredCount: campRegs.filter((r) => r.camp_id === c.id && r.status !== "cancelled").length,
+    }));
+
+    return ok({ trackCounts, campCounts });
+  }
+
+  // GET /all-camps — every camp, published or draft (admin needs to see both)
+  if (p0 === "all-camps") {
+    const { data } = await supabase.from("camps").select("*").order("start_date", { ascending: true });
+    return ok({ camps: rows(data) });
+  }
+
   // GET /all-competitions
   if (p0 === "all-competitions") {
     const { data } = await supabase.from("competitions").select("*").order("created_at", { ascending: false });
@@ -711,6 +773,42 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok({ badge: cam(data) });
   }
 
+  // POST /add-camp
+  if (p0 === "add-camp") {
+    const { data, error } = await supabase.from("camps").insert({
+      name: body.name,
+      description: body.description,
+      start_date: body.startDate,
+      end_date: body.endDate,
+      location: body.location,
+      is_virtual: body.isVirtual || false,
+      cost: parseFloat(body.cost) || 0,
+      capacity: body.capacity ? parseInt(body.capacity) : null,
+      type: body.type || [],
+      image: body.image,
+      link: body.link,
+      publish: body.publish || false,
+    }).select().single();
+    if (error) return err(error.message);
+    return ok({ camp: cam(data) });
+  }
+
+  // POST /add-track
+  if (p0 === "add-track") {
+    const slug = body.slug || (body.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+    const { data, error } = await supabase.from("tracks").insert({
+      name: body.name,
+      slug,
+      description: body.description,
+      icon: body.icon,
+      color: body.color,
+      sort_order: body.sortOrder ?? 0,
+      is_active: body.isActive !== false,
+    }).select().single();
+    if (error) return err(error.message);
+    return ok({ track: cam(data) });
+  }
+
   // POST /add-competition
   if (p0 === "add-competition") {
     const { data, error } = await supabase.from("competitions").insert({
@@ -902,8 +1000,62 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
-  const [p0, p1] = slug;
+  const [p0, p1, p2] = slug;
   const body = await req.json().catch(() => ({}));
+
+  // PUT /set-item-tracks/:itemType/:itemId — replace the full set of track tags for one item
+  if (p0 === "set-item-tracks" && p1 && p2) {
+    const itemType = p1;
+    const itemId = p2;
+    const trackIds: string[] = Array.isArray(body.trackIds) ? body.trackIds : [];
+
+    const del = await supabase.from("track_items").delete().eq("item_type", itemType).eq("item_id", itemId);
+    if (del.error) return err(del.error.message);
+
+    if (trackIds.length) {
+      const insertRows = trackIds.map((trackId) => ({ track_id: trackId, item_type: itemType, item_id: itemId }));
+      const { error } = await supabase.from("track_items").insert(insertRows);
+      if (error) return err(error.message);
+    }
+
+    return ok({ success: true });
+  }
+
+  // PUT /update-camp/:id
+  if (p0 === "update-camp" && p1) {
+    const patch: Record<string, unknown> = {};
+    if (body.name        !== undefined) patch.name        = body.name;
+    if (body.description !== undefined) patch.description = body.description;
+    if (body.startDate   !== undefined) patch.start_date   = body.startDate;
+    if (body.endDate     !== undefined) patch.end_date     = body.endDate;
+    if (body.location    !== undefined) patch.location    = body.location;
+    if (body.isVirtual   !== undefined) patch.is_virtual   = body.isVirtual;
+    if (body.cost        !== undefined) patch.cost        = parseFloat(body.cost) || 0;
+    if (body.capacity    !== undefined) patch.capacity    = body.capacity ? parseInt(body.capacity) : null;
+    if (body.type        !== undefined) patch.type        = body.type;
+    if (body.image       !== undefined) patch.image       = body.image;
+    if (body.link        !== undefined) patch.link        = body.link;
+    if (body.publish     !== undefined) patch.publish     = body.publish;
+    patch.updated_at = new Date().toISOString();
+    const { data, error } = await supabase.from("camps").update(patch).eq("id", p1).select().single();
+    if (error) return err(error.message);
+    return ok({ camp: cam(data) });
+  }
+
+  // PUT /update-track/:id
+  if (p0 === "update-track" && p1) {
+    const patch: Record<string, unknown> = {};
+    if (body.name        !== undefined) patch.name        = body.name;
+    if (body.slug        !== undefined) patch.slug        = body.slug;
+    if (body.description !== undefined) patch.description = body.description;
+    if (body.icon        !== undefined) patch.icon        = body.icon;
+    if (body.color       !== undefined) patch.color       = body.color;
+    if (body.sortOrder   !== undefined) patch.sort_order  = body.sortOrder;
+    if (body.isActive    !== undefined) patch.is_active   = body.isActive;
+    const { data, error } = await supabase.from("tracks").update(patch).eq("id", p1).select().single();
+    if (error) return err(error.message);
+    return ok({ track: cam(data) });
+  }
 
   // PUT /update-announcement/:id
   if (p0 === "update-announcement" && p1) {
@@ -1117,6 +1269,20 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
 
   async function del(table: string) {
     const { error } = await supabase.from(table).delete().or(`id.eq.${p1},mongo_id.eq.${p1}`);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
+  // camps/tracks are new tables with no mongo_id column — use eq("id") directly
+  // instead of del()'s id-or-mongo_id lookup. track_items/camp_registrations
+  // cascade-delete automatically via their FK ON DELETE CASCADE.
+  if (p0 === "delete-camp") {
+    const { error } = await supabase.from("camps").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+  if (p0 === "delete-track") {
+    const { error } = await supabase.from("tracks").delete().eq("id", p1);
     if (error) return err(error.message);
     return ok({ success: true });
   }
