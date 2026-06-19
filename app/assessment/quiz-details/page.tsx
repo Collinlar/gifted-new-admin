@@ -9,13 +9,14 @@ import Spinner from "@/components/ui/Spinner";
 import Input from "@/components/ui/Input";
 import api from "@/lib/api";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Image as ImageIcon } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Image as ImageIcon, Sparkles } from "lucide-react";
 
 interface Question {
   question: string;
   answers: string[];
   correctAnswer: string;
   explanation?: string;
+  hint?: string;
   image?: string;
 }
 
@@ -40,6 +41,8 @@ interface Quiz {
   displayScores?: boolean;
   showFeedbackForm?: boolean;
   shuffleQuestions?: boolean;
+  mode?: "exam" | "practice" | "both";
+  hintsEnabled?: boolean;
   questions?: Question[];
   createdAt?: string;
   updatedAt?: string;
@@ -60,10 +63,13 @@ export default function QuizDetailsPage() {
   const [metaForm, setMetaForm] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
 
+  const [generatingAI, setGeneratingAI] = useState(false);
+  const [aiResult, setAiResult] = useState<{ generated: number; skipped: number; total: number } | null>(null);
+
   const [editingQ, setEditingQ] = useState<number | null>(null);
-  const [qForm, setQForm] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "" });
+  const [qForm, setQForm] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "" });
   const [addingQ, setAddingQ] = useState(false);
-  const [newQ, setNewQ] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "" });
+  const [newQ, setNewQ] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "" });
 
   const load = async () => {
     const id = localStorage.getItem("id");
@@ -93,6 +99,8 @@ export default function QuizDetailsPage() {
       program:          quiz.program || "",
       tags:             arr(quiz.tags).join(", "),
       image:            quiz.image || "",
+      mode:             quiz.mode || "exam",
+      hintsEnabled:     quiz.hintsEnabled !== false,
       contest:          !!quiz.contest,
       featured:         !!quiz.featured,
       publish:          !!quiz.publish,
@@ -122,6 +130,8 @@ export default function QuizDetailsPage() {
         program:          metaForm.program || null,
         tags:             split(metaForm.tags),
         image:            metaForm.image || null,
+        mode:             metaForm.mode || "exam",
+        hintsEnabled:     metaForm.hintsEnabled,
         contest:          metaForm.contest,
         featured:         metaForm.featured,
         publish:          metaForm.publish,
@@ -178,6 +188,23 @@ export default function QuizDetailsPage() {
       setAddingQ(false);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const generateAIContent = async () => {
+    if (!quiz) return;
+    if (!confirm(`Generate AI explanations and hints for all ${quiz.questions?.length ?? 0} questions that are missing them? This runs once and stores the content — students will not trigger API calls during practice.`)) return;
+    setGeneratingAI(true);
+    setAiResult(null);
+    try {
+      const res = await api.post(`/generate-practice-content/${quiz._id}`);
+      setAiResult(res.data);
+      await load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || "Generation failed";
+      alert(msg);
+    } finally {
+      setGeneratingAI(false);
     }
   };
 
@@ -238,11 +265,29 @@ export default function QuizDetailsPage() {
                 </div>
                 <Input label="Tags (comma-separated)" value={String(metaForm.tags || "")} onChange={(e) => setM("tags", e.target.value)} placeholder="Math, Science..." />
                 <Input label="Image URL" value={String(metaForm.image || "")} onChange={(e) => setM("image", e.target.value)} placeholder="https://..." />
+                {/* Mode selector */}
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-ink">Content mode</label>
+                  <select
+                    value={String(metaForm.mode || "exam")}
+                    onChange={(e) => setM("mode", e.target.value)}
+                    className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+                  >
+                    <option value="exam">Exam — structured assessment, strict conditions</option>
+                    <option value="practice">Practice — adaptive session with feedback and hints</option>
+                    <option value="both">Both — serves as exam and practice content</option>
+                  </select>
+                  <p className="text-xs text-muted">
+                    Practice mode activates spacing, formative feedback, and the hint system for students.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-x-6 gap-y-2 pt-1">
                   {([
                     ["contest", "Contest mode"],
                     ["featured", "Featured"],
                     ["publish", "Published"],
+                    ["hintsEnabled", "Hints enabled (practice mode)"],
                     ["allowQuizReview", "Allow quiz review"],
                     ["displayScores", "Display scores"],
                     ["showFeedbackForm", "Show feedback form"],
@@ -271,6 +316,8 @@ export default function QuizDetailsPage() {
                     ["Program", quiz.program],
                     ["Attempts allowed", quiz.attemptsAllowed],
                     ["Status", quiz.publish ? "Published" : "Draft"],
+                    ["Mode", quiz.mode === "practice" ? "Practice" : quiz.mode === "both" ? "Exam + Practice" : "Exam"],
+                    ["Hints in practice", quiz.hintsEnabled !== false ? "Enabled" : "Disabled"],
                     ["Contest mode", quiz.contest ? "Yes" : "No"],
                     ["Featured", quiz.featured ? "Yes" : "No"],
                     ["Allow quiz review", quiz.allowQuizReview ? "Yes" : "No"],
@@ -312,9 +359,32 @@ export default function QuizDetailsPage() {
           <Card
             title={`${quiz.questions?.length ?? 0} question${quiz.questions?.length !== 1 ? "s" : ""}`}
             action={!addingQ && (
-              <Button size="sm" onClick={() => setAddingQ(true)}><Plus size={13} /> Add question</Button>
+              <div className="flex items-center gap-2">
+                {(quiz.mode === "practice" || quiz.mode === "both") && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={generateAIContent}
+                    disabled={generatingAI}
+                    title="Pre-generate explanations and hints so students don't trigger API calls during practice"
+                  >
+                    <Sparkles size={13} />
+                    {generatingAI ? "Generating..." : "Generate AI content"}
+                  </Button>
+                )}
+                <Button size="sm" onClick={() => setAddingQ(true)}><Plus size={13} /> Add question</Button>
+              </div>
             )}
           >
+            {aiResult && (
+              <div className="mb-4 px-4 py-3 rounded-xl bg-teal-50 border border-teal-200 text-sm text-teal-800 flex items-center justify-between">
+                <span>
+                  <strong>{aiResult.generated}</strong> questions enriched with AI explanations and hints.
+                  {aiResult.skipped > 0 && <> <span className="text-teal-600">{aiResult.skipped} already had content and were left unchanged.</span></>}
+                </span>
+                <button onClick={() => setAiResult(null)} className="text-teal-500 hover:text-teal-700 ml-4"><X size={14} /></button>
+              </div>
+            )}
             <div className="space-y-4">
               {quiz.questions?.map((q, i) => (
                 <div key={i} className="border border-border rounded-xl overflow-hidden">
@@ -366,8 +436,14 @@ export default function QuizDetailsPage() {
                         </select>
                       </div>
                       <div className="space-y-1">
-                        <label className="text-xs font-medium text-muted">Explanation</label>
+                        <label className="text-xs font-medium text-muted">Explanation (shown after answering in practice mode)</label>
                         <textarea value={qForm.explanation || ""} onChange={(e) => setQForm({ ...qForm, explanation: e.target.value })} rows={2}
+                          className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted">Hint (shown after 2 wrong attempts — do not reveal the answer)</label>
+                        <textarea value={qForm.hint || ""} onChange={(e) => setQForm({ ...qForm, hint: e.target.value })} rows={2}
+                          placeholder="Guide the student toward the reasoning without giving the answer..."
                           className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                       </div>
                     </div>
@@ -418,8 +494,14 @@ export default function QuizDetailsPage() {
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted">Explanation (optional)</label>
+                    <label className="text-xs font-medium text-muted">Explanation (optional — shown after answering in practice mode)</label>
                     <textarea value={newQ.explanation || ""} onChange={(e) => setNewQ({ ...newQ, explanation: e.target.value })} rows={2}
+                      className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted">Hint (optional — shown after 2 wrong attempts, do not reveal the answer)</label>
+                    <textarea value={newQ.hint || ""} onChange={(e) => setNewQ({ ...newQ, hint: e.target.value })} rows={2}
+                      placeholder="Guide the student toward the reasoning without giving the answer..."
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                   </div>
                   <div className="flex gap-2 pt-2">

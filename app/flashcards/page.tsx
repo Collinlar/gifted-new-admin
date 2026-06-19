@@ -9,7 +9,8 @@ import Spinner from "@/components/ui/Spinner";
 import SlidePanel from "@/components/ui/SlidePanel";
 import api from "@/lib/api";
 import {
-  Plus, Trash2, ChevronDown, ChevronUp, BookOpen, Zap, Download, Edit2, Check, X, Eye, EyeOff, Star,
+  Plus, Trash2, ChevronDown, ChevronUp, BookOpen, Download,
+  Edit2, Check, X, Eye, EyeOff, Star, Layers,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -20,23 +21,37 @@ interface FlashCard {
   difficulty?: string;
   courseId?: string;
   courseTitle?: string;
+  trackId?: string;
+  trackName?: string;
+  grade?: string;
+  subject?: string;
   publish?: boolean;
   featured?: boolean;
   createdAt?: string;
 }
 
-interface EditDraft { question: string; answer: string; difficulty: string; }
+interface Track { _id: string; id: string; name: string; }
+interface Course { id: string; title: string; }
 
-interface CourseGroup {
-  courseId: string;
-  courseTitle: string;
-  cards: FlashCard[];
+interface EditDraft {
+  question: string;
+  answer: string;
+  difficulty: string;
+  trackId: string;
+  grade: string;
+  subject: string;
 }
 
 interface CardDraft {
   question: string;
   answer: string;
   difficulty: string;
+}
+
+interface TrackGroup {
+  trackId: string;
+  trackName: string;
+  cards: FlashCard[];
 }
 
 const DIFFICULTIES = ["Easy", "Medium", "Hard"];
@@ -49,55 +64,63 @@ function diffColor(d?: string) {
   return "bg-amber-50 text-amber-700 border-amber-100";
 }
 
-function groupByourse(cards: FlashCard[]): CourseGroup[] {
-  const map = new Map<string, CourseGroup>();
+function groupByTrack(cards: FlashCard[]): TrackGroup[] {
+  const map = new Map<string, TrackGroup>();
   for (const c of cards) {
-    const key = c.courseId || "__none__";
+    const key = c.trackId || "__none__";
     if (!map.has(key)) {
       map.set(key, {
-        courseId: key,
-        courseTitle: c.courseTitle || (key === "__none__" ? "No course assigned" : key),
+        trackId: key,
+        trackName: c.trackName || (key === "__none__" ? "No track assigned" : key),
         cards: [],
       });
     }
     map.get(key)!.cards.push(c);
   }
-  return [...map.values()].sort((a, b) => a.courseTitle.localeCompare(b.courseTitle));
+  return [...map.values()].sort((a, b) => {
+    if (a.trackId === "__none__") return 1;
+    if (b.trackId === "__none__") return -1;
+    return a.trackName.localeCompare(b.trackName);
+  });
 }
 
 export default function FlashCardsPage() {
   const [cards, setCards] = useState<FlashCard[]>([]);
-  const [groups, setGroups] = useState<CourseGroup[]>([]);
+  const [groups, setGroups] = useState<TrackGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [panelOpen, setPanelOpen] = useState(false);
-  const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
 
   // Add form state
+  const [selectedTrack, setSelectedTrack] = useState("");
   const [selectedCourse, setSelectedCourse] = useState("");
+  const [selectedGrade, setSelectedGrade] = useState("");
+  const [selectedSubject, setSelectedSubject] = useState("");
   const [drafts, setDrafts] = useState<CardDraft[]>([{ question: "", answer: "", difficulty: "Medium" }]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
   // Edit state
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<EditDraft>({ question: "", answer: "", difficulty: "Medium" });
+  const [editDraft, setEditDraft] = useState<EditDraft>({
+    question: "", answer: "", difficulty: "Medium",
+    trackId: "", grade: "", subject: "",
+  });
 
   const load = useCallback(async () => {
     try {
-      const res = await api.get("/all-flashcards");
-      const data: FlashCard[] = res.data.allFlashCards || res.data.flashcards || [];
+      const [fcRes, trackRes, courseRes] = await Promise.all([
+        api.get("/all-flashcards"),
+        api.get("/all-tracks"),
+        api.get("/all-courses-admin-info"),
+      ]);
+      const data: FlashCard[] = fcRes.data.allFlashCards || fcRes.data.flashcards || [];
       setCards(data);
-      setGroups(groupByourse(data));
-
-      // Build course list from enriched data
-      const seen = new Map<string, string>();
-      for (const c of data) {
-        if (c.courseId && c.courseTitle && !seen.has(c.courseId)) {
-          seen.set(c.courseId, c.courseTitle);
-        }
-      }
-      setCourses([...seen.entries()].map(([id, title]) => ({ id, title })).sort((a, b) => a.title.localeCompare(b.title)));
+      setGroups(groupByTrack(data));
+      setTracks(trackRes.data.tracks || []);
+      setCourses((courseRes.data.courses || []).map((c: { _id: string; id?: string; title: string }) => ({ id: c._id || c.id || "", title: c.title })));
     } catch {
       setCards([]);
       setGroups([]);
@@ -125,14 +148,21 @@ export default function FlashCardsPage() {
     await api.delete(`/delete-flashcard/${id}`);
     setCards((prev) => {
       const next = prev.filter((c) => c._id !== id);
-      setGroups(groupByourse(next));
+      setGroups(groupByTrack(next));
       return next;
     });
   };
 
   const startEdit = (c: FlashCard) => {
     setEditingId(c._id);
-    setEditDraft({ question: c.question || "", answer: c.answer || "", difficulty: c.difficulty || "Medium" });
+    setEditDraft({
+      question: c.question || "",
+      answer: c.answer || "",
+      difficulty: c.difficulty || "Medium",
+      trackId: c.trackId || "",
+      grade: c.grade || "",
+      subject: c.subject || "",
+    });
   };
 
   const cancelEdit = () => setEditingId(null);
@@ -141,12 +171,15 @@ export default function FlashCardsPage() {
     if (!editingId) return;
     setSaving(true);
     try {
-      await api.put(`/update-flashcard/${editingId}`, editDraft);
-      setCards((prev) => {
-        const next = prev.map((c) => c._id === editingId ? { ...c, ...editDraft } : c);
-        setGroups(groupByourse(next));
-        return next;
+      await api.put(`/update-flashcard/${editingId}`, {
+        question: editDraft.question,
+        answer: editDraft.answer,
+        difficulty: editDraft.difficulty,
+        trackId: editDraft.trackId || null,
+        grade: editDraft.grade || null,
+        subject: editDraft.subject || null,
       });
+      await load();
       setEditingId(null);
     } catch { /* silent */ } finally {
       setSaving(false);
@@ -158,7 +191,7 @@ export default function FlashCardsPage() {
     await api.put(`/update-flashcard/${card._id}`, { publish: next });
     setCards((prev) => {
       const updated = prev.map((c) => c._id === card._id ? { ...c, publish: next } : c);
-      setGroups(groupByourse(updated));
+      setGroups(groupByTrack(updated));
       return updated;
     });
   };
@@ -168,7 +201,7 @@ export default function FlashCardsPage() {
     await api.put(`/update-flashcard/${card._id}`, { featured: next });
     setCards((prev) => {
       const updated = prev.map((c) => c._id === card._id ? { ...c, featured: next } : c);
-      setGroups(groupByourse(updated));
+      setGroups(groupByTrack(updated));
       return updated;
     });
   };
@@ -181,15 +214,21 @@ export default function FlashCardsPage() {
     try {
       for (const d of valid) {
         await api.post("/add-flashcard", {
-          question: d.question.trim(),
-          answer: d.answer.trim(),
+          question:  d.question.trim(),
+          answer:    d.answer.trim(),
           difficulty: d.difficulty,
-          courseId: selectedCourse || undefined,
+          trackId:   selectedTrack  || null,
+          courseId:  selectedCourse || null,
+          grade:     selectedGrade  || null,
+          subject:   selectedSubject || null,
         });
       }
       setPanelOpen(false);
       setDrafts([{ question: "", answer: "", difficulty: "Medium" }]);
+      setSelectedTrack("");
       setSelectedCourse("");
+      setSelectedGrade("");
+      setSelectedSubject("");
       await load();
     } catch {
       setFormError("Could not save. Check your connection and try again.");
@@ -201,16 +240,21 @@ export default function FlashCardsPage() {
   const handleExport = () => {
     const rows = cards.map((c, i) => ({
       "#": i + 1,
-      Course: c.courseTitle || "—",
-      Question: c.question || "—",
-      Answer: c.answer || "—",
-      Difficulty: c.difficulty || "—",
+      Track:    c.trackName  || "",
+      Subject:  c.subject    || "",
+      Grade:    c.grade      || "",
+      Question: c.question   || "",
+      Answer:   c.answer     || "",
+      Difficulty: c.difficulty || "",
+      Published: c.publish ? "Yes" : "No",
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Flash Cards");
     XLSX.writeFile(wb, "Gifted_FlashCards.xlsx");
   };
+
+  const publishedTotal = cards.filter((c) => c.publish).length;
 
   return (
     <AuthGuard>
@@ -219,7 +263,8 @@ export default function FlashCardsPage() {
           {/* Summary + actions */}
           <div className="flex items-center justify-between flex-wrap gap-3">
             <p className="text-sm text-muted">
-              {cards.length} card{cards.length !== 1 ? "s" : ""} across {groups.length} course{groups.length !== 1 ? "s" : ""}
+              {cards.length} card{cards.length !== 1 ? "s" : ""} across {groups.filter(g => g.trackId !== "__none__").length} track{groups.filter(g => g.trackId !== "__none__").length !== 1 ? "s" : ""}
+              {publishedTotal > 0 && <span className="ml-2 text-emerald-600">{publishedTotal} published</span>}
             </p>
             <div className="flex items-center gap-2">
               {cards.length > 0 && (
@@ -238,7 +283,7 @@ export default function FlashCardsPage() {
           ) : groups.length === 0 ? (
             <Card padding>
               <div className="py-12 text-center">
-                <Zap size={32} className="mx-auto text-muted mb-3 opacity-30" />
+                <Layers size={32} className="mx-auto text-muted mb-3 opacity-30" />
                 <p className="text-muted text-sm">No flash cards yet.</p>
                 <Button size="sm" className="mt-4" onClick={() => setPanelOpen(true)}>
                   <Plus size={14} /> Add your first cards
@@ -248,21 +293,20 @@ export default function FlashCardsPage() {
           ) : (
             <div className="space-y-2">
               {groups.map((group) => {
-                const isOpen = expanded.has(group.courseId);
+                const isOpen = expanded.has(group.trackId);
                 const diffCounts = { Easy: 0, Medium: 0, Hard: 0 };
                 let publishedCount = 0;
                 group.cards.forEach((c) => {
-                  const d = c.difficulty || "Medium";
-                  const key = d.charAt(0).toUpperCase() + d.slice(1).toLowerCase() as keyof typeof diffCounts;
+                  const d = (c.difficulty || "Medium");
+                  const key = (d.charAt(0).toUpperCase() + d.slice(1).toLowerCase()) as keyof typeof diffCounts;
                   if (key in diffCounts) diffCounts[key]++;
                   if (c.publish) publishedCount++;
                 });
 
                 return (
-                  <div key={group.courseId} className="bg-card border border-border rounded-xl overflow-hidden">
-                    {/* Group header */}
+                  <div key={group.trackId} className="bg-card border border-border rounded-xl overflow-hidden">
                     <button
-                      onClick={() => toggle(group.courseId)}
+                      onClick={() => toggle(group.trackId)}
                       className="w-full flex items-center justify-between px-5 py-4 hover:bg-surface/40 transition-colors"
                     >
                       <div className="flex items-center gap-3">
@@ -270,17 +314,19 @@ export default function FlashCardsPage() {
                           <BookOpen size={14} className="text-primary" />
                         </div>
                         <div className="text-left">
-                          <p className="font-semibold text-ink text-sm">{group.courseTitle}</p>
+                          <p className="font-semibold text-ink text-sm">{group.trackName}</p>
                           <p className="text-xs text-muted mt-0.5">
-                          {group.cards.length} card{group.cards.length !== 1 ? "s" : ""}
-                          {publishedCount > 0 && (
-                            <span className="ml-2 text-emerald-600">{publishedCount} published</span>
-                          )}
-                        </p>
+                            {group.cards.length} card{group.cards.length !== 1 ? "s" : ""}
+                            {publishedCount > 0 && (
+                              <span className="ml-2 text-emerald-600">{publishedCount} published</span>
+                            )}
+                            {publishedCount < group.cards.length && (
+                              <span className="ml-1 text-muted">{group.cards.length - publishedCount} draft</span>
+                            )}
+                          </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        {/* Difficulty chips */}
                         {diffCounts.Easy > 0 && (
                           <span className="px-2 py-0.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-100">
                             {diffCounts.Easy} easy
@@ -302,7 +348,6 @@ export default function FlashCardsPage() {
                       </div>
                     </button>
 
-                    {/* Card list */}
                     {isOpen && (
                       <div className="border-t border-border divide-y divide-border">
                         {group.cards.map((c, i) => (
@@ -319,6 +364,26 @@ export default function FlashCardsPage() {
                                     <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Answer</label>
                                     <textarea value={editDraft.answer} onChange={(e) => setEditDraft((d) => ({ ...d, answer: e.target.value }))}
                                       rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Track</label>
+                                    <select value={editDraft.trackId} onChange={(e) => setEditDraft((d) => ({ ...d, trackId: e.target.value }))}
+                                      className="w-full border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30">
+                                      <option value="">No track</option>
+                                      {tracks.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Grade</label>
+                                    <input value={editDraft.grade} onChange={(e) => setEditDraft((d) => ({ ...d, grade: e.target.value }))}
+                                      placeholder="e.g. 11" className="w-full border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                                  </div>
+                                  <div>
+                                    <label className="text-xs text-muted mb-1 font-medium uppercase tracking-wide block">Subject</label>
+                                    <input value={editDraft.subject} onChange={(e) => setEditDraft((d) => ({ ...d, subject: e.target.value }))}
+                                      placeholder="e.g. Biology" className="w-full border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-3">
@@ -342,14 +407,19 @@ export default function FlashCardsPage() {
                                 <div className="flex-1 grid grid-cols-2 gap-4 min-w-0">
                                   <div>
                                     <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Question</p>
-                                    <p className="text-sm text-ink">{c.question || "—"}</p>
+                                    <p className="text-sm text-ink">{c.question || ""}</p>
                                   </div>
                                   <div>
                                     <p className="text-xs text-muted mb-1 font-medium uppercase tracking-wide">Answer</p>
-                                    <p className="text-sm text-ink">{c.answer || "—"}</p>
+                                    <p className="text-sm text-ink">{c.answer || ""}</p>
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {c.grade && (
+                                    <span className="px-2 py-0.5 rounded-lg text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                                      G{c.grade}
+                                    </span>
+                                  )}
                                   {c.difficulty && (
                                     <span className={`px-2 py-0.5 rounded-lg text-xs font-medium border ${diffColor(c.difficulty)}`}>
                                       {c.difficulty}
@@ -394,20 +464,59 @@ export default function FlashCardsPage() {
         {/* Add cards panel */}
         <SlidePanel open={panelOpen} onClose={() => setPanelOpen(false)} title="Add flash cards" width="lg">
           <div className="space-y-5">
-            {/* Course selector */}
-            <div>
-              <label className="block text-sm font-medium text-ink mb-1.5">Course (optional)</label>
-              <select
-                value={selectedCourse}
-                onChange={(e) => setSelectedCourse(e.target.value)}
-                className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-card focus:outline-none focus:ring-1 focus:ring-primary/30 focus:border-primary"
-              >
-                <option value="">No course assigned</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>{c.title}</option>
-                ))}
-              </select>
+            {/* Track + metadata */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Track</label>
+                <select
+                  value={selectedTrack}
+                  onChange={(e) => setSelectedTrack(e.target.value)}
+                  className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-card focus:outline-none focus:ring-1 focus:ring-primary/30"
+                >
+                  <option value="">No track</option>
+                  {tracks.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Course (optional)</label>
+                <select
+                  value={selectedCourse}
+                  onChange={(e) => setSelectedCourse(e.target.value)}
+                  className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-card focus:outline-none focus:ring-1 focus:ring-primary/30"
+                >
+                  <option value="">No course</option>
+                  {courses.map((c) => (
+                    <option key={c.id} value={c.id}>{c.title}</option>
+                  ))}
+                </select>
+              </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Grade (optional)</label>
+                <input
+                  value={selectedGrade}
+                  onChange={(e) => setSelectedGrade(e.target.value)}
+                  placeholder="e.g. 11"
+                  className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-card focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Subject (optional)</label>
+                <input
+                  value={selectedSubject}
+                  onChange={(e) => setSelectedSubject(e.target.value)}
+                  placeholder="e.g. Biology"
+                  className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-card focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+              </div>
+            </div>
+
+            <p className="text-xs text-muted">
+              All cards in this batch share the same track, grade, and subject. You can change individual cards after saving.
+            </p>
 
             {/* Card drafts */}
             <div className="space-y-3">
@@ -424,7 +533,7 @@ export default function FlashCardsPage() {
               </div>
 
               {drafts.map((d, i) => (
-                <div key={i} className="p-4 bg-surface rounded-xl border border-border space-y-3 relative">
+                <div key={i} className="p-4 bg-surface rounded-xl border border-border space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold text-muted uppercase tracking-wide">Card {i + 1}</span>
                     <div className="flex items-center gap-2">

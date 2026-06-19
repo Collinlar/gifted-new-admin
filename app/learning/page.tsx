@@ -39,6 +39,7 @@ export default function LearningPage() {
     title: "", description: "", level: "", cost: "", duration: "",
     instructor: "", grade: [] as string[], program: [] as string[],
     category: [] as string[], tags: [] as string[], type: "Learning",
+    thumbnail: "",
   });
   const [modules, setModules] = useState<{ title: string; description: string; duration: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -88,7 +89,7 @@ export default function LearningPage() {
     try {
       await api.post("/add-course", { ...form, modules });
       setPanelOpen(false);
-      setForm({ title: "", description: "", level: "", cost: "", duration: "", instructor: "", grade: [], program: [], category: [], tags: [], type: "Learning" });
+      setForm({ title: "", description: "", level: "", cost: "", duration: "", instructor: "", grade: [], program: [], category: [], tags: [], type: "Learning", thumbnail: "" });
       setModules([]);
       await load();
     } catch {
@@ -195,6 +196,8 @@ export default function LearningPage() {
               <Input label="Cost" type="number" placeholder="0" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} />
               <Input label="Instructor" placeholder="Instructor name" value={form.instructor} onChange={(e) => setForm({ ...form, instructor: e.target.value })} />
             </div>
+
+            <Input label="Image URL" placeholder="https://..." value={form.thumbnail} onChange={(e) => setForm({ ...form, thumbnail: e.target.value })} />
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-ink">Grade levels</label>

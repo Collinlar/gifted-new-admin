@@ -45,6 +45,7 @@ const emptyForm = () => ({
   customizableButton: "",
   type: [] as string[],
   subTypes: "",
+  image: "",
 });
 
 type FormState = ReturnType<typeof emptyForm>;
@@ -91,6 +92,7 @@ export default function CompetitionsPage() {
       customizableButton: c.customizableButton || "",
       type: c.type || [],
       subTypes: (c.subTypes || []).join(", "),
+      image: (c as Competition & { image?: string }).image || "",
     });
     setFormError("");
     setPanelOpen(true);
@@ -285,6 +287,7 @@ export default function CompetitionsPage() {
             </div>
 
             <Input label="Registration link" placeholder="https://..." value={form.link} onChange={set("link")} />
+            <Input label="Image URL" placeholder="https://..." value={form.image} onChange={set("image")} />
             <Input
               label="Button label"
               placeholder='e.g. "View Results" or "Register Now"'

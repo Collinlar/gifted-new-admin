@@ -157,6 +157,33 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ courses: rows(data) });
   }
 
+  // GET /course/:id — single course with steps for the learning path
+  if (p0 === "course" && p1) {
+    const { data } = await supabase.from("courses").select("*").or(`id.eq.${p1},mongo_id.eq.${p1}`).maybeSingle();
+    return ok({ course: data ? cam(data) : null });
+  }
+
+  // GET /course-step-options — exams, contest exams, flashcard groups for step builder
+  if (p0 === "course-step-options") {
+    const [examsRes, contestsRes, fcRes] = await Promise.all([
+      supabase.from("exams").select("id, title, mode, number_of_questions, time").order("title"),
+      supabase.from("exams").select("id, title, number_of_questions").eq("contest", true).order("title"),
+      supabase.from("flashcards").select("id, subject, grade, track_id").order("subject"),
+    ]);
+    // Group flashcards by subject|grade key
+    const fcMap = new Map<string, { subject: string; grade: string; trackId: string; count: number }>();
+    for (const fc of (fcRes.data ?? [])) {
+      const key = `${fc.subject || ""}|${fc.grade || ""}`;
+      if (!fcMap.has(key)) fcMap.set(key, { subject: fc.subject || "Flash Cards", grade: fc.grade || "", trackId: fc.track_id || "", count: 0 });
+      fcMap.get(key)!.count++;
+    }
+    return ok({
+      exams: rows(examsRes.data),
+      contests: rows(contestsRes.data),
+      flashcardGroups: [...fcMap.entries()].map(([key, v]) => ({ id: key, ...v })),
+    });
+  }
+
   // GET /all-tracks
   if (p0 === "all-tracks") {
     const { data } = await supabase.from("tracks").select("*").order("sort_order", { ascending: true });
@@ -228,8 +255,61 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   // GET /all-announcements
   if (p0 === "all-announcements") {
-    const { data } = await supabase.from("announcements").select("*").order("created_at", { ascending: false });
+    const { data } = await supabase.from("announcements").select("*").order("is_pinned", { ascending: false }).order("created_at", { ascending: false });
     return ok({ announcements: rows(data) });
+  }
+
+  // GET /user-announcements?userId=xxx
+  if (p0 === "user-announcements") {
+    const userId = searchParams.get("userId");
+    if (!userId) return ok({ announcements: [] });
+
+    // Fetch user grade and track memberships in parallel
+    const [userRes, tracksRes, dismissedRes] = await Promise.all([
+      supabase.from("users").select("grade").eq("id", userId).single(),
+      supabase.from("user_tracks").select("track_id").eq("user_id", userId),
+      supabase.from("user_announcement_dismissals").select("announcement_id").eq("user_id", userId),
+    ]);
+
+    const userGrade = String(userRes.data?.grade || "");
+    const trackIds: string[] = (tracksRes.data || []).map((t: { track_id: string }) => t.track_id);
+    const dismissedIds = new Set((dismissedRes.data || []).map((d: { announcement_id: string }) => d.announcement_id));
+
+    const now = new Date().toISOString();
+    const { data: all } = await supabase
+      .from("announcements")
+      .select("*")
+      .eq("is_published", true)
+      .or(`expires_at.is.null,expires_at.gt.${now}`)
+      .order("is_pinned", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    const filtered = (all || []).filter((a: Record<string, unknown>) => {
+      if (dismissedIds.has(a.id as string)) return false;
+      const grades = (a.target_grades as string[]) || [];
+      if (grades.length > 0 && !grades.includes(userGrade)) return false;
+      const tracks = (a.target_tracks as string[]) || [];
+      if (tracks.length > 0 && !tracks.some((t) => trackIds.includes(t))) return false;
+      return true;
+    });
+
+    return ok({ announcements: filtered.map(cam) });
+  }
+
+  // GET /announcement-content-options
+  if (p0 === "announcement-content-options") {
+    const [examsRes, contestsRes, coursesRes, tracksRes] = await Promise.all([
+      supabase.from("exams").select("id, title, number_of_questions").eq("contest", false).order("title"),
+      supabase.from("exams").select("id, title, number_of_questions").eq("contest", true).order("title"),
+      supabase.from("courses").select("id, title").order("title"),
+      supabase.from("tracks").select("id, name, slug").order("name"),
+    ]);
+    return ok({
+      exams: rows(examsRes.data),
+      contests: rows(contestsRes.data),
+      courses: rows(coursesRes.data),
+      tracks: rows(tracksRes.data),
+    });
   }
 
   // GET /all-badges
@@ -252,21 +332,30 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ interests: r, allInterest: r });
   }
 
-  // GET /all-flashcards — enriched with course title
+  // GET /all-flashcards — enriched with course title and track name
   if (p0 === "all-flashcards") {
     const { data } = await supabase.from("flashcards").select("*").order("created_at", { ascending: false });
     if (!data || data.length === 0) return ok({ flashcards: [], allFlashCards: [] });
 
     const courseIds = [...new Set(data.map((r: Record<string,unknown>) => r.course_id).filter(Boolean))] as string[];
+    const trackIds  = [...new Set(data.map((r: Record<string,unknown>) => r.track_id).filter(Boolean))]  as string[];
+
     let cMap: Record<string, string> = {};
+    let tMap: Record<string, string> = {};
+
     if (courseIds.length > 0) {
       const { data: coursesData } = await supabase.from("courses").select("mongo_id,title").in("mongo_id", courseIds);
       for (const c of (coursesData || [])) cMap[c.mongo_id] = c.title;
+    }
+    if (trackIds.length > 0) {
+      const { data: tracksData } = await supabase.from("tracks").select("id,name").in("id", trackIds);
+      for (const t of (tracksData || [])) tMap[t.id] = t.name;
     }
 
     const enriched = data.map((r: Record<string,unknown>) => ({
       ...(cam(r) as Record<string,unknown>),
       courseTitle: cMap[(r.course_id as string) || ""] || "",
+      trackName:   tMap[(r.track_id  as string) || ""] || "",
     }));
 
     return ok({ flashcards: enriched, allFlashCards: enriched });
@@ -698,6 +787,27 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 export async function POST(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const [p0] = slug;
+
+  // upload-file uses multipart/form-data — must be handled BEFORE req.json() consumes the body stream
+  if (p0 === "upload-file") {
+    try {
+      const formData = await req.formData();
+      const file = formData.get("file") as File | null;
+      if (!file) return err("No file provided");
+      const ext = file.name.split(".").pop() || "bin";
+      const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const { error: upErr } = await supabase.storage
+        .from("gifted-files")
+        .upload(path, buffer, { contentType: file.type, upsert: false });
+      if (upErr) return err(upErr.message);
+      const { data: urlData } = supabase.storage.from("gifted-files").getPublicUrl(path);
+      return ok({ url: urlData.publicUrl, path });
+    } catch (e) {
+      return err(String(e));
+    }
+  }
+
   const body = await req.json().catch(() => ({}));
 
   // POST /admin-login
@@ -752,9 +862,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       target_audience: body.targetAudience || "All Users",
       publish_date: body.publishDate || null,
       is_published: body.isPublished || false,
+      type: body.type || "general",
+      content_id: body.contentId || null,
+      target_grades: body.targetGrades || [],
+      target_tracks: body.targetTracks || [],
+      expires_at: body.expiresAt || null,
+      is_pinned: body.isPinned || false,
     }).select().single();
     if (error) return err(error.message);
     return ok({ announcement: cam(data) });
+  }
+
+  // POST /dismiss-announcement
+  if (p0 === "dismiss-announcement") {
+    const { error } = await supabase.from("user_announcement_dismissals").upsert({
+      user_id: body.userId,
+      announcement_id: body.announcementId,
+      dismissed_at: new Date().toISOString(),
+    }, { onConflict: "user_id,announcement_id" });
+    if (error) return err(error.message);
+    return ok({ dismissed: true });
   }
 
   // POST /add-badge
@@ -825,6 +952,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       sub_types: body.subTypes || [],
       assessments: body.assessments || [],
       courses: body.courses || [],
+      image: body.image || null,
     }).select().single();
     if (error) return err(error.message);
     return ok({ program: cam(data) });
@@ -847,6 +975,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       level: body.level,
       instructor: body.instructor,
       featured: body.featured || false,
+      steps: body.steps || [],
     }).select().single();
     if (error) return err(error.message);
     return ok({ course: cam(data) });
@@ -883,9 +1012,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   // POST /add-flashcard
   if (p0 === "add-flashcard") {
     const { data, error } = await supabase.from("flashcards").insert({
-      course_id: body.courseId,
-      question: body.question,
-      answer: body.answer,
+      course_id:  body.courseId  || null,
+      track_id:   body.trackId   || null,
+      grade:      body.grade     || null,
+      subject:    body.subject   || null,
+      question:   body.question,
+      answer:     body.answer,
       difficulty: body.difficulty,
     }).select().single();
     if (error) return err(error.message);
@@ -913,26 +1045,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     }).select().single();
     if (error) return err(error.message);
     return ok({ interest: cam(data) });
-  }
-
-  // POST /upload-file  — multipart, uploads to Supabase storage, returns public URL
-  if (p0 === "upload-file") {
-    try {
-      const formData = await req.formData();
-      const file = formData.get("file") as File | null;
-      if (!file) return err("No file provided");
-      const ext = file.name.split(".").pop() || "bin";
-      const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const { error: upErr } = await supabase.storage
-        .from("gifted-files")
-        .upload(path, buffer, { contentType: file.type, upsert: false });
-      if (upErr) return err(upErr.message);
-      const { data: urlData } = supabase.storage.from("gifted-files").getPublicUrl(path);
-      return ok({ url: urlData.publicUrl, path });
-    } catch (e) {
-      return err(String(e));
-    }
   }
 
   // POST /add-pathway
@@ -991,6 +1103,105 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     }).select().single();
     if (error) return err(error.message);
     return ok({ challenge: cam(data) });
+  }
+
+  // POST /generate-practice-content/:id
+  // Loops through every question in the exam, generates missing explanation + hint
+  // via Groq, then writes the enriched questions back to Supabase.
+  // Students then read stored text — zero runtime AI calls.
+  if (p0 === "generate-practice-content" && slug[1]) {
+    const examId = slug[1];
+    const GROQ_KEY = process.env.GROQ_API_KEY;
+    if (!GROQ_KEY) return err("GROQ_API_KEY not configured on server");
+
+    const { data: examRow, error: fetchErr } = await supabase
+      .from("exams")
+      .select("questions")
+      .or(`id.eq.${examId},mongo_id.eq.${examId}`)
+      .single();
+    if (fetchErr || !examRow) return err("Exam not found");
+
+    const questions: Record<string, unknown>[] = Array.isArray(examRow.questions) ? examRow.questions : [];
+    if (questions.length === 0) return ok({ generated: 0, skipped: 0 });
+
+    const GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions";
+    const GROQ_MODEL = "llama-3.3-70b-versatile";
+
+    async function groq(system: string, user: string): Promise<string> {
+      const res = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          max_tokens: 250,
+          messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json() as { choices?: { message?: { content?: string } }[] };
+      return d.choices?.[0]?.message?.content?.trim() || "";
+    }
+
+    const EXPLANATION_SYSTEM = `You write short explanations for school exam questions for students in Africa.
+Rules: Explain why the correct answer is right in 2 to 3 sentences. Plain, direct language for secondary school level. Do not start with "The correct answer is". Do not use em dashes. Do not use filler phrases like "Great job" or "Well done". Your output must not contain em dashes.`;
+
+    const HINT_SYSTEM = `You write hints for school exam questions for students in Africa.
+Rules: Never reveal the correct answer or its letter. Lead the student toward the right reasoning with a guiding question or key concept. Maximum 2 sentences. Plain English for secondary school level. Do not use em dashes. Do not start with "Think about" every time. Your output must not contain em dashes.`;
+
+    let generated = 0;
+    let skipped   = 0;
+
+    const enriched = await Promise.all(
+      questions.map(async (q) => {
+        const opts: string[] = Array.isArray(q.answers)
+          ? (q.answers as string[])
+          : Array.isArray(q.options) ? (q.options as string[]) : [];
+
+        const correctStr = (q.correctAnswer ?? q.correct_answer ?? "") as string;
+        const correctIdx = typeof correctStr === "number"
+          ? correctStr
+          : opts.findIndex((o) => String(o) === String(correctStr));
+        const correctOption = opts[correctIdx as number] ?? "";
+
+        const optLines = opts.map((o, i) => `${String.fromCharCode(65 + i)}. ${o}`).join("\n");
+        const questionText = String(q.question || "");
+
+        const needsExplanation = !q.explanation || String(q.explanation).trim() === "";
+        const needsHint        = !q.hint        || String(q.hint).trim()        === "";
+
+        if (!needsExplanation && !needsHint) { skipped++; return q; }
+
+        const updates: Record<string, unknown> = {};
+
+        try {
+          if (needsExplanation && correctOption) {
+            updates.explanation = await groq(
+              EXPLANATION_SYSTEM,
+              `Question: ${questionText}\nOptions:\n${optLines}\nCorrect answer: ${correctOption}\n\nWrite the explanation.`
+            );
+          }
+          if (needsHint) {
+            updates.hint = await groq(
+              HINT_SYSTEM,
+              `Question: ${questionText}\nOptions:\n${optLines}\n\nWrite a hint.`
+            );
+          }
+          generated++;
+        } catch {
+          skipped++;
+        }
+
+        return { ...q, ...updates };
+      })
+    );
+
+    const { error: updateErr } = await supabase
+      .from("exams")
+      .update({ questions: enriched, updated_at: new Date().toISOString() })
+      .or(`id.eq.${examId},mongo_id.eq.${examId}`);
+
+    if (updateErr) return err(updateErr.message);
+    return ok({ success: true, generated, skipped, total: questions.length });
   }
 
   return err("Not found", 404);
@@ -1107,6 +1318,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.level       !== undefined) patch.level       = body.level;
     if (body.instructor  !== undefined) patch.instructor  = body.instructor;
     if (body.featured    !== undefined) patch.featured    = body.featured;
+    if (body.steps       !== undefined) patch.steps       = body.steps;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("courses").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
@@ -1129,6 +1341,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.subTypes          !== undefined) patch.sub_types          = body.subTypes;
     if (body.assessments       !== undefined) patch.assessments        = body.assessments;
     if (body.courses           !== undefined) patch.courses            = body.courses;
+    if (body.image             !== undefined) patch.image              = body.image;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("competitions").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
@@ -1138,21 +1351,29 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   // PUT /update-exam/:id
   if (p0 === "update-exam" && p1) {
     const patch: Record<string, unknown> = {};
-    if (body.title !== undefined) patch.title = body.title;
-    if (body.description !== undefined) patch.description = body.description;
-    if (body.featured !== undefined) patch.featured = body.featured;
-    if (body.published !== undefined) patch.publish = body.published;
-    if (body.publish !== undefined) patch.publish = body.publish;
-    if (body.contest !== undefined) patch.contest = body.contest;
-    if (body.questions !== undefined) patch.questions = body.questions;
-    if (body.level !== undefined) patch.level = body.level;
-    if (body.difficulty !== undefined) patch.difficulty = body.difficulty;
-    if (body.time !== undefined) patch.time = body.time;
-    if (body.attemptsAllowed !== undefined) patch.attempts_allowed = body.attemptsAllowed;
-    if (body.allowQuizReview !== undefined) patch.allow_quiz_review = body.allowQuizReview;
-    if (body.displayScores !== undefined) patch.display_scores = body.displayScores;
-    if (body.showFeedbackForm !== undefined) patch.show_feedback_form = body.showFeedbackForm;
-    if (body.shuffleQuestions !== undefined) patch.shuffle_questions = body.shuffleQuestions;
+    if (body.title              !== undefined) patch.title               = body.title;
+    if (body.description        !== undefined) patch.description         = body.description;
+    if (body.numberOfQuestions  !== undefined) patch.number_of_questions = body.numberOfQuestions;
+    if (body.grade              !== undefined) patch.grade               = body.grade;
+    if (body.level              !== undefined) patch.level               = body.level;
+    if (body.difficulty         !== undefined) patch.difficulty          = body.difficulty;
+    if (body.instructor         !== undefined) patch.instructor          = body.instructor;
+    if (body.program            !== undefined) patch.program             = body.program;
+    if (body.tags               !== undefined) patch.tags                = body.tags;
+    if (body.image              !== undefined) patch.image               = body.image;
+    if (body.time               !== undefined) patch.time                = body.time;
+    if (body.featured           !== undefined) patch.featured            = body.featured;
+    if (body.published          !== undefined) patch.publish             = body.published;
+    if (body.publish            !== undefined) patch.publish             = body.publish;
+    if (body.contest            !== undefined) patch.contest             = body.contest;
+    if (body.questions          !== undefined) patch.questions           = body.questions;
+    if (body.attemptsAllowed    !== undefined) patch.attempts_allowed    = body.attemptsAllowed;
+    if (body.allowQuizReview    !== undefined) patch.allow_quiz_review   = body.allowQuizReview;
+    if (body.displayScores      !== undefined) patch.display_scores      = body.displayScores;
+    if (body.showFeedbackForm   !== undefined) patch.show_feedback_form  = body.showFeedbackForm;
+    if (body.shuffleQuestions   !== undefined) patch.shuffle_questions   = body.shuffleQuestions;
+    if (body.mode               !== undefined) patch.mode                = body.mode;
+    if (body.hintsEnabled       !== undefined) patch.hints_enabled       = body.hintsEnabled;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("exams").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
@@ -1187,7 +1408,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.question   !== undefined) patch.question   = body.question;
     if (body.answer     !== undefined) patch.answer     = body.answer;
     if (body.difficulty !== undefined) patch.difficulty = body.difficulty;
-    if (body.courseId   !== undefined) patch.course_id  = body.courseId;
+    if (body.courseId   !== undefined) patch.course_id  = body.courseId  || null;
+    if (body.trackId    !== undefined) patch.track_id   = body.trackId   || null;
+    if (body.grade      !== undefined) patch.grade      = body.grade     || null;
+    if (body.subject    !== undefined) patch.subject    = body.subject   || null;
     if (body.publish    !== undefined) patch.publish    = body.publish;
     if (body.featured   !== undefined) patch.featured   = body.featured;
     patch.updated_at = new Date().toISOString();
