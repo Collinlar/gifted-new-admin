@@ -261,7 +261,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   // GET /user-announcements?userId=xxx
   if (p0 === "user-announcements") {
-    const userId = searchParams.get("userId");
+    const userId = new URL(req.url).searchParams.get("userId");
     if (!userId) return ok({ announcements: [] });
 
     // Fetch user grade and track memberships in parallel
@@ -1271,15 +1271,20 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   // PUT /update-announcement/:id
   if (p0 === "update-announcement" && p1) {
     const patch: Record<string, unknown> = {};
-    if (body.title !== undefined) patch.title = body.title;
-    if (body.body !== undefined) patch.body = body.body;
-    if (body.ctaLabel !== undefined) patch.cta_label = body.ctaLabel;
-    if (body.ctaLink !== undefined) patch.cta_link = body.ctaLink;
+    if (body.title         !== undefined) patch.title          = body.title;
+    if (body.body          !== undefined) patch.body           = body.body;
+    if (body.ctaLabel      !== undefined) patch.cta_label      = body.ctaLabel;
+    if (body.ctaLink       !== undefined) patch.cta_link       = body.ctaLink;
     if (body.targetAudience !== undefined) patch.target_audience = body.targetAudience;
-    if (body.publishDate !== undefined) patch.publish_date = body.publishDate || null;
-    if (body.isPublished !== undefined) patch.is_published = body.isPublished;
-    patch.updated_at = new Date().toISOString();
-    const { data, error } = await supabase.from("announcements").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
+    if (body.publishDate   !== undefined) patch.publish_date   = body.publishDate || null;
+    if (body.isPublished   !== undefined) patch.is_published   = body.isPublished;
+    if (body.type          !== undefined) patch.type           = body.type;
+    if (body.contentId     !== undefined) patch.content_id     = body.contentId || null;
+    if (body.targetGrades  !== undefined) patch.target_grades  = body.targetGrades;
+    if (body.targetTracks  !== undefined) patch.target_tracks  = body.targetTracks;
+    if (body.expiresAt     !== undefined) patch.expires_at     = body.expiresAt || null;
+    if (body.isPinned      !== undefined) patch.is_pinned      = body.isPinned;
+    const { data, error } = await supabase.from("announcements").update(patch).eq("id", p1).select().single();
     if (error) return err(error.message);
     return ok({ announcement: cam(data) });
   }
