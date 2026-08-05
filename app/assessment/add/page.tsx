@@ -9,7 +9,7 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import MathEditor from "@/components/ui/MathEditor";
 import api from "@/lib/api";
-import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, ImagePlus } from "lucide-react";
 
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const LEVELS = ["Beginner", "Intermediate", "Advanced"];
@@ -72,6 +72,7 @@ export default function AddQuizPage() {
 
   // Questions
   const [questions, setQuestions] = useState<Question[]>([blankQuestion()]);
+  const [uploadingImage, setUploadingImage] = useState<number | null>(null);
 
   const toggleGrade = (g: string) => {
     setGrades((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]);
@@ -91,6 +92,24 @@ export default function AddQuizPage() {
 
   const updateQuestion = (qi: number, field: string, val: string) => {
     const u = [...questions]; u[qi] = { ...u[qi], [field]: val }; setQuestions(u);
+  };
+
+  // A diagram the whole question refers to reads better above the question than
+  // embedded mid-sentence, so it gets its own slot separate from MathEditor.
+  const uploadQuestionImage = async (qi: number, file: File) => {
+    setUploadingImage(qi);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload-file", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || "Upload failed");
+      updateQuestion(qi, "image", json.url);
+    } catch {
+      setError("That image did not upload. Check your connection and try again.");
+    } finally {
+      setUploadingImage(null);
+    }
   };
 
   const updateAnswer = (qi: number, ai: number, text: string) => {
@@ -330,6 +349,34 @@ export default function AddQuizPage() {
                         placeholder="Type the question..."
                         rows={3}
                       />
+
+                      {/* Question diagram */}
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-ink">
+                          Question image <span className="text-muted font-normal text-xs">(shown above the question)</span>
+                        </label>
+                        {q.image ? (
+                          <div className="flex items-start gap-3 border border-border rounded-lg p-3">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={q.image} alt="" className="h-20 w-auto rounded object-contain border border-border" />
+                            <button type="button" onClick={() => updateQuestion(qi, "image", "")}
+                              className="text-xs font-semibold text-danger hover:underline">
+                              Remove this image
+                            </button>
+                          </div>
+                        ) : (
+                          <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-xs font-medium text-muted hover:border-primary hover:text-primary cursor-pointer transition-colors">
+                            <ImagePlus size={13} />
+                            {uploadingImage === qi ? "Adding your image..." : "Add a question image"}
+                            <input type="file" accept="image/*" className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) uploadQuestionImage(qi, f);
+                                e.target.value = "";
+                              }} />
+                          </label>
+                        )}
+                      </div>
 
                       {/* Answer options */}
                       <div className="space-y-2">

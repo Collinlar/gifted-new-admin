@@ -7,7 +7,7 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import api from "@/lib/api";
-import { Plus, Eye, Trash2, Search } from "lucide-react";
+import { Plus, Eye, Trash2, Search, UploadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 interface Question { question: string; answers: string[]; correctAnswer: string; explanation: string; }
@@ -85,6 +85,9 @@ export default function AssessmentPage() {
                   className="pl-8 pr-3 py-2 text-sm border border-border rounded-lg bg-card focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary w-44"
                 />
               </div>
+              <Button variant="secondary" size="sm" onClick={() => router.push("/assessment/bulk")}>
+                <UploadCloud size={14} /> Bulk upload
+              </Button>
               <Button size="sm" onClick={() => router.push("/assessment/add")}>
                 <Plus size={14} /> Add quiz
               </Button>

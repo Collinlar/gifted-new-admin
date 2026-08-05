@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback } from "react";
+import { ImagePlus, Loader2 } from "lucide-react";
 
 interface Props {
   value: string;
@@ -9,6 +10,10 @@ interface Props {
   rows?: number;
   label?: string;
 }
+
+// Inline styles rather than classes: this HTML is rendered raw on the student
+// side, where the admin stylesheet does not apply.
+const IMG_STYLE = "max-width:100%;height:auto;display:block;margin:8px 0;border-radius:6px";
 
 const SYMBOLS_ROW1 = [
   "α","β","γ","Δ","θ","λ","π","Σ","∫","∞","√","≈","≠","≤","≥","·","×","÷","±",
@@ -41,8 +46,11 @@ function countChars(text: string) {
 
 export default function MathEditor({ value, onChange, placeholder = "Type here...", rows = 4, label }: Props) {
   const [mode, setMode] = useState<"rich" | "html">("rich");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const divRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const insertAtCursor = useCallback((text: string) => {
     if (mode === "html") {
@@ -79,6 +87,79 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
       onChange(el.innerHTML);
     }
   }, [mode, value, onChange]);
+
+  const insertHtmlAtCursor = useCallback((html: string) => {
+    if (mode === "html") {
+      const el = areaRef.current;
+      if (!el) { onChange(value + html); return; }
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      onChange(value.slice(0, start) + html + value.slice(end));
+      requestAnimationFrame(() => {
+        el.selectionStart = el.selectionEnd = start + html.length;
+        el.focus();
+      });
+      return;
+    }
+
+    const el = divRef.current;
+    if (!el) return;
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
+      onChange(value + html);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const frag = range.createContextualFragment(html);
+    const last = frag.lastChild;
+    range.insertNode(frag);
+    if (last) {
+      range.setStartAfter(last);
+      range.setEndAfter(last);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    onChange(el.innerHTML);
+  }, [mode, value, onChange]);
+
+  const uploadAndInsert = useCallback(async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setUploadError("That file is not an image. Pick a PNG, JPG or WebP.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError("That image is over 5MB. Compress it and try again.");
+      return;
+    }
+    setUploadError("");
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload-file", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || "Upload failed");
+      insertHtmlAtCursor(`<img src="${json.url}" alt="" style="${IMG_STYLE}" />`);
+    } catch {
+      setUploadError("The image did not upload. Check your connection and try again.");
+    } finally {
+      setUploading(false);
+    }
+  }, [insertHtmlAtCursor]);
+
+  // Most people screenshot a diagram rather than saving it as a file first,
+  // so pasting straight from the clipboard needs to work.
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((it) => it.type.startsWith("image/"));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    uploadAndInsert(file);
+  }, [uploadAndInsert]);
 
   const handleRichInput = () => {
     if (divRef.current) onChange(divRef.current.innerHTML);
@@ -140,7 +221,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {TEMPLATES.map((t) => (
             <button
               key={t.label}
@@ -151,7 +232,36 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
               {t.label}
             </button>
           ))}
+
+          <span className="w-px h-5 bg-border mx-1" />
+
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-semibold border border-primary/30 bg-primary-light text-primary hover:bg-primary hover:text-white transition-colors disabled:opacity-60"
+          >
+            {uploading
+              ? <><Loader2 size={11} className="animate-spin" /> Adding your image...</>
+              : <><ImagePlus size={11} /> Add image</>
+            }
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) uploadAndInsert(f);
+              e.target.value = "";
+            }}
+          />
         </div>
+
+        {uploadError && (
+          <p className="text-xs text-danger bg-red-50 rounded px-2 py-1">{uploadError}</p>
+        )}
       </div>
 
       {/* Editor area */}
@@ -161,6 +271,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
           contentEditable
           suppressContentEditableWarning
           onInput={handleRichInput}
+          onPaste={handlePaste}
           data-placeholder={placeholder}
           className="min-h-[96px] px-4 py-3 text-sm text-ink focus:outline-none empty:before:content-[attr(data-placeholder)] empty:before:text-subtle"
           style={{ minHeight: `${rows * 24}px` }}
@@ -171,6 +282,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
           ref={areaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onPaste={handlePaste}
           placeholder={placeholder}
           rows={rows}
           className="w-full px-4 py-3 text-sm text-ink font-mono focus:outline-none resize-none"

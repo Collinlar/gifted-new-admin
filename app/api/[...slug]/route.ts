@@ -39,6 +39,45 @@ function rows(data: Record<string, unknown>[] | null) {
   return (data ?? []).map(cam);
 }
 
+// Maps an incoming exam payload onto the exams table.
+//
+// The create-quiz form and the bulk importer send slightly different key names
+// for the same settings (duration/time, published/publish, allowReview/
+// allowQuizReview, showFeedback/showFeedbackForm). Earlier this route only read
+// one spelling of each, so the time limit, publish flag, review flag and
+// feedback flag were silently dropped on every quiz created through the form.
+// Accept both spellings.
+function examRow(body: Record<string, unknown>) {
+  const pick = (...keys: string[]) => {
+    for (const k of keys) if (body[k] !== undefined && body[k] !== "") return body[k];
+    return undefined;
+  };
+  return {
+    title:               body.title,
+    description:         body.description,
+    grade:               body.grade || [],
+    time:                pick("time", "timeLimit", "duration") ?? null,
+    number_of_questions: pick("numberOfQuestions", "numQuestions") ?? null,
+    image:               body.image,
+    questions:           body.questions || [],
+    instructions:        body.instructions || [],
+    mode:                pick("mode", "examMode") ?? "quiz",
+    featured:            body.featured || false,
+    publish:             pick("publish", "published") || false,
+    contest:             body.contest || false,
+    allow_quiz_review:   pick("allowQuizReview", "allowReview") || false,
+    display_scores:      body.displayScores ?? true,
+    show_feedback_form:  pick("showFeedbackForm", "showFeedback") || false,
+    shuffle_questions:   body.shuffleQuestions || false,
+    attempts_allowed:    body.attemptsAllowed || 1,
+    level:               body.level,
+    difficulty:          body.difficulty,
+    instructor:          body.instructor,
+    program:             body.program,
+    tags:                body.tags || [],
+  };
+}
+
 // ── Router ─────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
@@ -296,10 +335,49 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ announcements: filtered.map(cam) });
   }
 
+  // GET /exam-sessions — list of sittings with a live progress roll-up
+  if (p0 === "exam-sessions") {
+    const { data: sessions } = await supabase
+      .from("exam_sessions").select("*").order("created_at", { ascending: false });
+
+    const ids = (sessions || []).map((s: { id: string }) => s.id);
+    const { data: cands } = ids.length
+      ? await supabase.from("exam_candidates").select("session_id, status").in("session_id", ids)
+      : { data: [] };
+
+    const roll: Record<string, Record<string, number>> = {};
+    for (const c of (cands || []) as { session_id: string; status: string }[]) {
+      roll[c.session_id] ??= { total: 0, pending: 0, in_progress: 0, submitted: 0, disqualified: 0 };
+      roll[c.session_id].total++;
+      roll[c.session_id][c.status] = (roll[c.session_id][c.status] || 0) + 1;
+    }
+
+    return ok({
+      sessions: (sessions || []).map((s: Record<string, unknown>) => ({
+        ...cam(s),
+        counts: roll[s.id as string] || { total: 0, pending: 0, in_progress: 0, submitted: 0, disqualified: 0 },
+      })),
+    });
+  }
+
+  // GET /exam-session/:id — full roster for the monitoring board
+  if (p0 === "exam-session" && p1) {
+    const { data: session, error } = await supabase
+      .from("exam_sessions").select("*").eq("id", p1).single();
+    if (error) return err(error.message);
+
+    const { data: candidates } = await supabase
+      .from("exam_candidates").select("*").eq("session_id", p1).order("full_name");
+
+    return ok({ session: cam(session), candidates: rows(candidates) });
+  }
+
   // GET /announcement-content-options
   if (p0 === "announcement-content-options") {
     const [examsRes, contestsRes, coursesRes, tracksRes] = await Promise.all([
-      supabase.from("exams").select("id, title, number_of_questions").eq("contest", false).order("title"),
+      // Older rows have contest NULL rather than false, and .eq("contest", false)
+      // would hide every one of them from the picker.
+      supabase.from("exams").select("id, title, number_of_questions").or("contest.is.null,contest.eq.false").order("title"),
       supabase.from("exams").select("id, title, number_of_questions").eq("contest", true).order("title"),
       supabase.from("courses").select("id, title").order("title"),
       supabase.from("tracks").select("id, name, slug").order("name"),
@@ -873,6 +951,61 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok({ announcement: cam(data) });
   }
 
+  // POST /create-exam-session
+  if (p0 === "create-exam-session") {
+    if (!body.examId) return err("Choose which assessment this sitting uses.");
+
+    // A code people will type off a printed slip or a WhatsApp message
+    const base = String(body.sessionCode || body.title || "EXAM")
+      .toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+    const code = base || "EXAM";
+
+    const { data, error } = await supabase.from("exam_sessions").insert({
+      exam_id:                   body.examId,
+      title:                     body.title,
+      session_code:              code,
+      starts_at:                 body.startsAt || null,
+      ends_at:                   body.endsAt || null,
+      duration_minutes:          Number(body.durationMinutes) || 60,
+      status:                    body.status || "scheduled",
+      show_results_to_candidate: body.showResultsToCandidate ?? false,
+      shuffle_questions:         body.shuffleQuestions ?? true,
+      lock_to_device:            body.lockToDevice ?? true,
+      max_tab_switches:          body.maxTabSwitches ?? 3,
+    }).select().single();
+
+    if (error) {
+      if (error.code === "23505") return err("That session code is already in use. Pick another.");
+      return err(error.message);
+    }
+    return ok({ session: cam(data) });
+  }
+
+  // POST /generate-candidates — bulk credential issue
+  if (p0 === "generate-candidates") {
+    const people = Array.isArray(body.people) ? body.people : [];
+    if (!body.sessionId) return err("No exam sitting given.");
+    if (people.length === 0) return err("Add at least one candidate.");
+
+    const { data, error } = await supabase.rpc("admin_generate_candidates", {
+      p_session_id: body.sessionId,
+      p_people: people,
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
+  // POST /candidate-action — invigilator controls
+  if (p0 === "candidate-action") {
+    const { error } = await supabase.rpc("admin_candidate_action", {
+      p_candidate_id: body.candidateId,
+      p_action: body.action,
+      p_minutes: Number(body.minutes) || 0,
+    });
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
   // POST /dismiss-announcement
   if (p0 === "dismiss-announcement") {
     const { error } = await supabase.from("user_announcement_dismissals").upsert({
@@ -983,30 +1116,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   // POST /add-exam
   if (p0 === "add-exam") {
-    const { data, error } = await supabase.from("exams").insert({
-      title: body.title,
-      description: body.description,
-      grade: body.grade || [],
-      time: body.time || body.timeLimit || null,
-      number_of_questions: body.numberOfQuestions || body.numQuestions || null,
-      image: body.image,
-      questions: body.questions || [],
-      featured: body.featured || false,
-      publish: body.publish || false,
-      contest: body.contest || false,
-      allow_quiz_review: body.allowQuizReview || false,
-      display_scores: body.displayScores || false,
-      show_feedback_form: body.showFeedbackForm || false,
-      shuffle_questions: body.shuffleQuestions || false,
-      attempts_allowed: body.attemptsAllowed || 1,
-      level: body.level,
-      difficulty: body.difficulty,
-      instructor: body.instructor,
-      program: body.program,
-      tags: body.tags || [],
-    }).select().single();
+    const { data, error } = await supabase.from("exams").insert(examRow(body)).select().single();
     if (error) return err(error.message);
     return ok({ exam: cam(data) });
+  }
+
+  // POST /bulk-add-exam — create an exam from a parsed spreadsheet, or append
+  // the parsed questions onto an exam that already exists.
+  if (p0 === "bulk-add-exam") {
+    const incoming = Array.isArray(body.questions) ? body.questions : [];
+    if (incoming.length === 0) return err("No questions to import.");
+
+    if (body.examId) {
+      const { data: existing, error: readErr } = await supabase
+        .from("exams").select("id, questions").eq("id", body.examId).single();
+      if (readErr) return err(readErr.message);
+
+      const merged = [...(existing.questions || []), ...incoming];
+      const { data, error } = await supabase
+        .from("exams")
+        .update({ questions: merged, number_of_questions: merged.length })
+        .eq("id", body.examId).select().single();
+      if (error) return err(error.message);
+      return ok({ exam: cam(data), imported: incoming.length, total: merged.length });
+    }
+
+    const row = examRow({ ...body, numberOfQuestions: incoming.length });
+    const { data, error } = await supabase.from("exams").insert(row).select().single();
+    if (error) return err(error.message);
+    return ok({ exam: cam(data), imported: incoming.length, total: incoming.length });
   }
 
   // POST /add-flashcard
@@ -1268,6 +1406,24 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ track: cam(data) });
   }
 
+  // PUT /update-exam-session/:id
+  if (p0 === "update-exam-session" && p1) {
+    const patch: Record<string, unknown> = {};
+    if (body.title                  !== undefined) patch.title                     = body.title;
+    if (body.startsAt               !== undefined) patch.starts_at                 = body.startsAt || null;
+    if (body.endsAt                 !== undefined) patch.ends_at                   = body.endsAt || null;
+    if (body.durationMinutes        !== undefined) patch.duration_minutes          = Number(body.durationMinutes) || 60;
+    if (body.status                 !== undefined) patch.status                    = body.status;
+    if (body.showResultsToCandidate !== undefined) patch.show_results_to_candidate = body.showResultsToCandidate;
+    if (body.shuffleQuestions       !== undefined) patch.shuffle_questions         = body.shuffleQuestions;
+    if (body.lockToDevice           !== undefined) patch.lock_to_device            = body.lockToDevice;
+    if (body.maxTabSwitches         !== undefined) patch.max_tab_switches          = body.maxTabSwitches;
+
+    const { data, error } = await supabase.from("exam_sessions").update(patch).eq("id", p1).select().single();
+    if (error) return err(error.message);
+    return ok({ session: cam(data) });
+  }
+
   // PUT /update-announcement/:id
   if (p0 === "update-announcement" && p1) {
     const patch: Record<string, unknown> = {};
@@ -1512,6 +1668,18 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
   }
   if (p0 === "delete-track") {
     const { error } = await supabase.from("tracks").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
+  // Exam tables use real uuid ids, so the legacy mongo_id fallback in del() does not apply
+  if (p0 === "delete-exam-session" && p1) {
+    const { error } = await supabase.from("exam_sessions").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+  if (p0 === "delete-candidate" && p1) {
+    const { error } = await supabase.from("exam_candidates").delete().eq("id", p1);
     if (error) return err(error.message);
     return ok({ success: true });
   }
