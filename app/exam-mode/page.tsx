@@ -12,7 +12,7 @@ import api from "@/lib/api";
 import * as XLSX from "xlsx";
 import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
-  Printer, MoreHorizontal, RefreshCw, Play, Square, Link2, Pause,
+  Printer, ChevronRight, RefreshCw, Play, Square, Link2, Pause,
   ShieldCheck, FileText, History, Send, Lock, Unlock, X, AlertTriangle,
   CheckCircle2, XCircle,
 } from "lucide-react";
@@ -188,7 +188,7 @@ export default function ExamModePage() {
                           <span>{s.durationMinutes} min</span>
                         </div>
                       </div>
-                      <MoreHorizontal size={16} className="text-subtle shrink-0" />
+                      <ChevronRight size={16} className="text-subtle shrink-0" />
                     </button>
                   );
                 })}
@@ -219,6 +219,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [error, setError]           = useState("");
   const [notice, setNotice]         = useState("");
   const [transcriptFor, setTranscriptFor] = useState<Candidate | null>(null);
+  const [panelFor, setPanelFor] = useState<Candidate | null>(null);
 
   // Pending action awaiting a reason
   const [ask, setAsk] = useState<null | {
@@ -555,7 +556,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                     <tbody>
                       {candidates.map((c) => (
                         <CandidateRow key={c.id} c={c} session={session} paused={paused}
-                          onRequest={request} onTranscript={() => setTranscriptFor(c)} />
+                          onOpen={() => setPanelFor(c)} />
                       ))}
                     </tbody>
                   </table>
@@ -570,6 +571,18 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
 
         <AddCandidatesPanel open={addOpen} sessionId={sessionId}
           onClose={() => setAddOpen(false)} onAdded={() => { setAddOpen(false); load(); }} />
+
+        {panelFor && (
+          <CandidatePanel
+            // Re-read from the polled list so the panel keeps updating live
+            c={candidates.find((x) => x.id === panelFor.id) || panelFor}
+            session={session}
+            paused={paused}
+            onClose={() => setPanelFor(null)}
+            onRequest={request}
+            onTranscript={() => { setTranscriptFor(panelFor); setPanelFor(null); }}
+          />
+        )}
 
         {ask && (
           <ReasonModal title={ask.title} required={ask.required}
@@ -586,37 +599,40 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
 
 // ── Candidate row ──────────────────────────────────────────────────────────
 
-function CandidateRow({ c, session, paused, onRequest, onTranscript }: {
-  c: Candidate; session: Session | null; paused: boolean;
-  onRequest: (title: string, action: string, scope: "session" | "candidate",
-              opts?: { candidateId?: string; value?: number; flag?: boolean }) => void;
-  onTranscript: () => void;
+// Time means different things at different stages, and showing a dash for
+// everyone who has finished wastes the column. Writing candidates get their
+// remaining time, finished ones get how long they actually took.
+function candidateTime(c: Candidate, paused: boolean): { text: string; tone: string } {
+  if (c.status === "pending") return { text: "Not started", tone: "text-subtle" };
+
+  if (c.status === "in_progress" && c.expiresAt) {
+    if (paused) return { text: "Paused", tone: "text-amber-600 font-medium" };
+    const ms = new Date(c.expiresAt).getTime() - Date.now();
+    if (ms <= 0) return { text: "Time up", tone: "text-danger font-medium" };
+    const mins = Math.floor(ms / 60000);
+    const text = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m left` : `${mins}m left`;
+    return { text, tone: mins <= 5 ? "text-danger font-medium" : "text-ink" };
+  }
+
+  if (c.startedAt && c.submittedAt) {
+    const mins = Math.round((new Date(c.submittedAt).getTime() - new Date(c.startedAt).getTime()) / 60000);
+    const text = mins >= 60 ? `Took ${Math.floor(mins / 60)}h ${mins % 60}m` : `Took ${mins} min`;
+    return { text, tone: "text-muted" };
+  }
+
+  return { text: "—", tone: "text-subtle" };
+}
+
+function CandidateRow({ c, session, paused, onOpen }: {
+  c: Candidate; session: Session | null; paused: boolean; onOpen: () => void;
 }) {
-  const [menu, setMenu] = useState(false);
   const meta = STATUS_META[c.status];
   const maxTabs = session?.maxTabSwitches ?? 0;
-
-  const timeLeft = useMemo(() => {
-    if (c.status !== "in_progress" || !c.expiresAt) return null;
-    if (paused) return "Paused";
-    const ms = new Date(c.expiresAt).getTime() - Date.now();
-    if (ms <= 0) return "Time up";
-    const m = Math.floor(ms / 60000);
-    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
-  }, [c.status, c.expiresAt, paused]);
-
-  const item = (action: string, label: string, value = 0) => ({ action, label, value });
-  const items = [
-    item("release", "Release the device lock"),
-    item("extend", "Add 10 minutes", 10),
-    item("reduce", "Take back 10 minutes", 10),
-    item("reinstate", "Let them back in"),
-    item("disqualify", "Stop this attempt"),
-    item("reset", "Reset to a clean start"),
-  ];
+  const time = candidateTime(c, paused);
 
   return (
-    <tr className="border-b border-border last:border-0 hover:bg-surface/40">
+    <tr onClick={onOpen}
+      className="border-b border-border last:border-0 hover:bg-surface/60 cursor-pointer transition-colors">
       <td className="px-4 py-2.5">
         <p className="font-medium text-ink">{c.fullName}</p>
         {(c.school || c.grade) && (
@@ -630,8 +646,11 @@ function CandidateRow({ c, session, paused, onRequest, onTranscript }: {
       <td className="px-4 py-2.5">
         <span className={`px-2 py-0.5 rounded text-xs font-medium border ${meta.cls}`}>{meta.label}</span>
       </td>
-      <td className="px-4 py-2.5 text-xs text-muted whitespace-nowrap">
-        {timeLeft ? <span className="flex items-center gap-1"><Clock size={11} /> {timeLeft}</span> : "—"}
+      <td className="px-4 py-2.5 whitespace-nowrap">
+        <span className={`text-xs flex items-center gap-1 ${time.tone}`}>
+          {c.status === "in_progress" && <Clock size={11} />}
+          {time.text}
+        </span>
       </td>
       <td className="px-4 py-2.5">
         {c.tabSwitches > 0 ? (
@@ -647,32 +666,177 @@ function CandidateRow({ c, session, paused, onRequest, onTranscript }: {
           ? <span className="font-semibold text-ink">{c.score}/{c.totalQuestions}</span>
           : <span className="text-subtle">—</span>}
       </td>
-      <td className="px-4 py-2.5 relative whitespace-nowrap">
-        <button onClick={onTranscript} title="Open the full transcript"
-          className="p-1 rounded hover:bg-surface text-subtle hover:text-primary mr-1">
-          <FileText size={14} />
-        </button>
-        <button onClick={() => setMenu((v) => !v)} className="p-1 rounded hover:bg-surface text-subtle hover:text-ink">
-          <MoreHorizontal size={15} />
-        </button>
-        {menu && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-            <div className="absolute right-4 top-9 z-20 w-56 bg-card border border-border rounded-xl shadow-lg py-1 text-sm">
-              {items.map(({ action, label, value }) => (
-                <button key={action}
-                  onClick={() => { setMenu(false); onRequest(label, action, "candidate", { candidateId: c.id, value }); }}
-                  className={`w-full text-left px-3 py-2 hover:bg-surface transition-colors ${
-                    action === "disqualify" || action === "reset" ? "text-danger" : "text-ink"
-                  }`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+      <td className="px-4 py-2.5 text-right">
+        <ChevronRight size={15} className="text-subtle inline" />
       </td>
     </tr>
+  );
+}
+
+// ── Candidate panel ────────────────────────────────────────────────────────
+//
+// Replaces the old row dropdown. That menu lived inside a horizontally
+// scrolling table, so it was clipped, pushed the layout wide, and left no room
+// to say what any control actually did. A panel has space for the state, the
+// controls and a plain sentence explaining each one.
+
+interface ControlDef {
+  action: string; label: string; help: string;
+  value?: number; tone?: "normal" | "danger";
+  show: (c: Candidate) => boolean;
+}
+
+const CONTROLS: ControlDef[] = [
+  {
+    action: "release", label: "Release the device lock",
+    help: "Lets them sign in from a different machine. Use this when a laptop fails and they move to a spare.",
+    show: (c) => c.status === "in_progress" || c.status === "pending",
+  },
+  {
+    action: "extend", label: "Add 10 minutes", value: 10,
+    help: "Pushes this candidate's finish time back. Only affects them, nobody else.",
+    show: (c) => c.status === "in_progress",
+  },
+  {
+    action: "reduce", label: "Take back 10 minutes", value: 10,
+    help: "Pulls their finish time in, if time was granted in error.",
+    show: (c) => c.status === "in_progress",
+  },
+  {
+    action: "reinstate", label: "Let them back in",
+    help: "Undoes a stop and clears their tab switch count so they can carry on.",
+    show: (c) => c.status === "disqualified",
+  },
+  {
+    action: "disqualify", label: "Stop this attempt", tone: "danger",
+    help: "Ends the attempt now. Their answers so far are kept and stay on record.",
+    show: (c) => c.status === "in_progress" || c.status === "pending",
+  },
+  {
+    action: "reset", label: "Reset to a clean start", tone: "danger",
+    help: "Wipes every answer, the clock and the device lock so they begin again from nothing. Their old answers cannot be recovered.",
+    show: () => true,
+  },
+];
+
+function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }: {
+  c: Candidate; session: Session | null; paused: boolean; onClose: () => void;
+  onRequest: (title: string, action: string, scope: "session" | "candidate",
+              opts?: { candidateId?: string; value?: number; flag?: boolean }) => void;
+  onTranscript: () => void;
+}) {
+  const meta = STATUS_META[c.status];
+  const time = candidateTime(c, paused);
+  const maxTabs = session?.maxTabSwitches ?? 0;
+  const overLimit = maxTabs > 0 && c.tabSwitches > maxTabs;
+
+  return (
+    <SlidePanel open onClose={onClose} title={c.fullName} width="lg">
+      <div className="space-y-5">
+        {(c.school || c.grade) && (
+          <p className="text-sm text-muted -mt-2">
+            {[c.school, c.grade && `Grade ${c.grade}`].filter(Boolean).join(" · ")}
+          </p>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${meta.cls}`}>{meta.label}</span>
+          <span className={`text-xs ${time.tone}`}>{time.text}</span>
+          {c.score != null && (
+            <span className="text-xs font-semibold text-ink">Scored {c.score} of {c.totalQuestions}</span>
+          )}
+        </div>
+
+        {/* Credentials */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-surface border border-border rounded-lg px-3 py-2">
+            <p className="text-xs text-muted mb-0.5">Access code</p>
+            <p className="font-mono text-sm font-semibold text-ink tracking-wider">{c.accessCode}</p>
+          </div>
+          <div className="bg-surface border border-border rounded-lg px-3 py-2">
+            <p className="text-xs text-muted mb-0.5">Password</p>
+            <p className="font-mono text-sm font-semibold text-ink tracking-wider">{c.passwordPlain}</p>
+          </div>
+        </div>
+
+        {/* Timing */}
+        <div className="border border-border rounded-xl divide-y divide-border text-sm">
+          <Row label="Started"   value={fmt(c.startedAt)} />
+          <Row label="Due to finish" value={fmt(c.expiresAt)} />
+          <Row label="Submitted" value={fmt(c.submittedAt)} />
+          <Row label="Last seen" value={fmt(c.lastSeenAt)} />
+        </div>
+
+        {/* Invigilation state */}
+        <div className={`rounded-xl px-3 py-2.5 border flex items-start gap-2 ${
+          overLimit ? "bg-red-50 border-red-200"
+            : c.tabSwitches > 0 ? "bg-amber-50 border-amber-200"
+            : "bg-emerald-50 border-emerald-200"
+        }`}>
+          <ShieldAlert size={14} className={`shrink-0 mt-0.5 ${
+            overLimit ? "text-danger" : c.tabSwitches > 0 ? "text-amber-600" : "text-emerald-600"
+          }`} />
+          <div>
+            <p className={`text-sm font-medium ${
+              overLimit ? "text-danger" : c.tabSwitches > 0 ? "text-amber-800" : "text-emerald-800"
+            }`}>
+              {c.tabSwitches === 0
+                ? "No tab switches recorded"
+                : `${c.tabSwitches} tab switch${c.tabSwitches === 1 ? "" : "es"} recorded`}
+            </p>
+            <p className="text-xs text-muted mt-0.5">
+              {maxTabs === 0
+                ? "This sitting records tab switches but never stops anyone for them."
+                : overLimit
+                  ? `Over the limit of ${maxTabs}, so this attempt was stopped automatically.`
+                  : `The limit for this sitting is ${maxTabs}.`}
+            </p>
+          </div>
+        </div>
+
+        <Button variant="secondary" onClick={onTranscript} className="w-full">
+          <FileText size={14} /> Open the full transcript
+        </Button>
+
+        {/* Controls */}
+        <div className="border-t border-border pt-4">
+          <p className="text-sm font-semibold text-ink mb-1">Invigilator controls</p>
+          <p className="text-xs text-muted mb-3">
+            Each of these is recorded against your account with the reason you give.
+          </p>
+
+          <div className="space-y-2">
+            {CONTROLS.filter((ctl) => ctl.show(c)).map((ctl) => (
+              <button
+                key={ctl.action}
+                onClick={() => onRequest(ctl.label, ctl.action, "candidate", {
+                  candidateId: c.id, value: ctl.value,
+                })}
+                className={`w-full text-left px-3 py-2.5 rounded-xl border transition-colors ${
+                  ctl.tone === "danger"
+                    ? "border-red-200 hover:bg-red-50"
+                    : "border-border hover:border-primary hover:bg-primary-light/40"
+                }`}
+              >
+                <p className={`text-sm font-medium ${ctl.tone === "danger" ? "text-danger" : "text-ink"}`}>
+                  {ctl.label}
+                </p>
+                <p className="text-xs text-muted mt-0.5 leading-relaxed">{ctl.help}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </SlidePanel>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 px-3 py-2">
+      <span className="text-xs text-muted shrink-0">{label}</span>
+      <span className="text-xs text-ink text-right">{value}</span>
+    </div>
   );
 }
 
