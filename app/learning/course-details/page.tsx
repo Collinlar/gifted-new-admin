@@ -15,6 +15,7 @@ import {
   Link as LinkIcon, BookOpen, Layers, Zap, Target, FileQuestion,
 } from "lucide-react";
 import api from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -345,12 +346,7 @@ export default function CourseDetailsPage() {
   const uploadContentItemFile = async (itemId: string, file: File) => {
     setUploadingItemId(itemId);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/upload-file", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || "Upload failed");
-      updateContentItem(itemId, { url: json.url });
+      updateContentItem(itemId, { url: await uploadFile(file) });
     } catch (e) {
       setStepError(String(e));
     } finally {

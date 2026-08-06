@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback } from "react";
 import { ImagePlus, Loader2 } from "lucide-react";
+import { uploadFile } from "@/lib/upload";
 
 interface Props {
   value: string;
@@ -136,12 +137,8 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
     setUploadError("");
     setUploading(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/upload-file", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || "Upload failed");
-      insertHtmlAtCursor(`<img src="${json.url}" alt="" style="${IMG_STYLE}" />`);
+      const url = await uploadFile(file);
+      insertHtmlAtCursor(`<img src="${url}" alt="" style="${IMG_STYLE}" />`);
     } catch {
       setUploadError("The image did not upload. Check your connection and try again.");
     } finally {

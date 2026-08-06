@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { issueToken, verifyToken, bearerFrom } from "@/lib/adminToken";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -78,11 +79,39 @@ function examRow(body: Record<string, unknown>) {
   };
 }
 
+// ── Authentication ─────────────────────────────────────────────────────────
+//
+// Every route below reaches the database with the service role key, so an
+// unauthenticated call here is a full compromise. The guard runs before any
+// handler and rejects anything without a token this server signed.
+//
+// Only the login route is public, for the obvious reason.
+const PUBLIC_ROUTES = new Set(["admin-login"]);
+
+function unauthorized() {
+  return NextResponse.json({ error: "Your session has expired. Sign in again." }, { status: 401 });
+}
+
+// Returns null when the request may proceed, or a 401 response to return.
+function guard(req: NextRequest, p0: string) {
+  if (PUBLIC_ROUTES.has(p0)) return null;
+  return verifyToken(bearerFrom(req)) ? null : unauthorized();
+}
+
+// Who is performing an admin action. Read from the verified token rather than
+// from a field the page could set, so one admin cannot attribute an action to
+// another. Reaching this means guard() already passed.
+function actorFrom(req: NextRequest): string {
+  return verifyToken(bearerFrom(req))?.email || "unknown";
+}
+
 // ── Router ─────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const [p0, p1, p2] = slug;
+  const denied = guard(req, p0);
+  if (denied) return denied;
   const url = req.nextUrl;
 
   // GET /dashboard-stats — counts + chart data without fetching all rows
@@ -370,6 +399,46 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       .from("exam_candidates").select("*").eq("session_id", p1).order("full_name");
 
     return ok({ session: cam(session), candidates: rows(candidates) });
+  }
+
+  // GET /exam-transcript/:candidateId — everything needed to settle a challenge
+  if (p0 === "exam-transcript" && p1) {
+    const { data, error } = await supabase.rpc("admin_get_transcript", { p_candidate_id: p1 });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
+  // GET /exam-audit/:sessionId — admin action history plus chain integrity
+  if (p0 === "exam-audit" && p1) {
+    const { data: entries } = await supabase
+      .from("exam_audit_log").select("*").eq("session_id", p1).order("id", { ascending: false });
+
+    const { data: chain } = await supabase.rpc("admin_verify_audit_chain");
+
+    return ok({ entries: rows(entries), chain });
+  }
+
+  // GET /exam-session-events/:sessionId — every monitoring event in the sitting
+  if (p0 === "exam-session-events" && p1) {
+    const { data: cands } = await supabase
+      .from("exam_candidates").select("id, full_name").eq("session_id", p1);
+
+    const ids = (cands || []).map((c: { id: string }) => c.id);
+    const nameById = Object.fromEntries(
+      (cands || []).map((c: { id: string; full_name: string }) => [c.id, c.full_name])
+    );
+
+    const { data: events } = ids.length
+      ? await supabase.from("exam_events").select("*").in("candidate_id", ids)
+          .order("created_at", { ascending: false }).limit(500)
+      : { data: [] };
+
+    return ok({
+      events: (events || []).map((e: Record<string, unknown>) => ({
+        ...cam(e),
+        candidateName: nameById[e.candidate_id as string] || "Unknown",
+      })),
+    });
   }
 
   // GET /announcement-content-options
@@ -865,6 +934,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 export async function POST(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const [p0] = slug;
+  const denied = guard(req, p0);
+  if (denied) return denied;
 
   // upload-file uses multipart/form-data — must be handled BEFORE req.json() consumes the body stream
   if (p0 === "upload-file") {
@@ -914,9 +985,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
     if (!match) return ok({ success: false, message: "Incorrect password." });
 
-    // Return a simple token — AuthGuard only checks if truthy
-    const token = Buffer.from(`${email}:${Date.now()}`).toString("base64");
-    return ok({ success: true, token, admin: cam(admin) });
+    // HMAC signed and time limited. Every other route verifies this before
+    // touching the database.
+    return ok({ success: true, token: issueToken(email), admin: cam(admin) });
   }
 
   // POST /add-admin
@@ -995,15 +1066,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok(data);
   }
 
-  // POST /candidate-action — invigilator controls
+  // POST /candidate-action — invigilator controls on one candidate
   if (p0 === "candidate-action") {
     const { error } = await supabase.rpc("admin_candidate_action", {
       p_candidate_id: body.candidateId,
       p_action: body.action,
       p_minutes: Number(body.minutes) || 0,
+      p_actor: actorFrom(req),
+      p_reason: body.reason || null,
     });
     if (error) return err(error.message);
     return ok({ success: true });
+  }
+
+  // POST /session-action — invigilator controls on the whole sitting
+  if (p0 === "session-action") {
+    const { data, error } = await supabase.rpc("admin_session_action", {
+      p_session_id: body.sessionId,
+      p_action: body.action,
+      p_value: Number(body.value) || 0,
+      p_flag: body.flag ?? null,
+      p_actor: actorFrom(req),
+      p_reason: body.reason || null,
+    });
+    if (error) return err(error.message);
+    return ok(data);
   }
 
   // POST /dismiss-announcement
@@ -1350,6 +1437,8 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const [p0, p1, p2] = slug;
+  const denied = guard(req, p0);
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
 
   // PUT /set-item-tracks/:itemType/:itemId — replace the full set of track tags for one item
@@ -1651,6 +1740,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const [p0, p1] = slug;
+  const denied = guard(req, p0);
+  if (denied) return denied;
 
   async function del(table: string) {
     const { error } = await supabase.from(table).delete().or(`id.eq.${p1},mongo_id.eq.${p1}`);

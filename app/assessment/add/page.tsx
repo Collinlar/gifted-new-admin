@@ -9,6 +9,7 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import MathEditor from "@/components/ui/MathEditor";
 import api from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, ImagePlus } from "lucide-react";
 
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
@@ -99,12 +100,7 @@ export default function AddQuizPage() {
   const uploadQuestionImage = async (qi: number, file: File) => {
     setUploadingImage(qi);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/upload-file", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || "Upload failed");
-      updateQuestion(qi, "image", json.url);
+      updateQuestion(qi, "image", await uploadFile(file));
     } catch {
       setError("That image did not upload. Check your connection and try again.");
     } finally {
