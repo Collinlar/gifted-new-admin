@@ -12,17 +12,26 @@ import crypto from "crypto";
 
 const TTL_HOURS = 12; // long enough for an exam day, short enough to matter
 
-function secret(): string {
+// Returns null rather than throwing when nothing is configured. A throw here
+// would surface as a 500 on every route, which is both a confusing way to
+// report a missing setting and a way to take the whole admin down.
+function secret(): string | null {
   const explicit = process.env.ADMIN_TOKEN_SECRET;
   if (explicit && explicit.length >= 16) return explicit;
 
   // Fall back to the service role key so this works without new configuration.
-  // It is already server-only and secret, but a dedicated ADMIN_TOKEN_SECRET is
-  // better: rotating it then does not mean rotating database access too.
-  const fallback = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // Both names are accepted because lib/supabase.ts accepts both, and a
+  // deployment that sets only NEXT_SERVICE_ROLE is a working deployment.
+  const fallback = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_SERVICE_ROLE;
   if (fallback) return fallback;
 
-  throw new Error("No ADMIN_TOKEN_SECRET or SUPABASE_SERVICE_ROLE_KEY is set.");
+  return null;
+}
+
+// True when the server can sign and verify at all. Used to turn a missing
+// setting into a clear message instead of a mystery failure.
+export function signingConfigured(): boolean {
+  return secret() !== null;
 }
 
 const b64url = (buf: Buffer | string) =>
@@ -31,8 +40,8 @@ const b64url = (buf: Buffer | string) =>
 const fromB64url = (s: string) =>
   Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-function sign(payload: string): string {
-  return b64url(crypto.createHmac("sha256", secret()).update(payload).digest());
+function sign(payload: string, key: string): string {
+  return b64url(crypto.createHmac("sha256", key).update(payload).digest());
 }
 
 export interface AdminClaims {
@@ -41,7 +50,10 @@ export interface AdminClaims {
   exp: number;
 }
 
-export function issueToken(email: string): string {
+export function issueToken(email: string): string | null {
+  const key = secret();
+  if (!key) return null;
+
   const now = Date.now();
   const claims: AdminClaims = {
     email,
@@ -49,7 +61,7 @@ export function issueToken(email: string): string {
     exp: now + TTL_HOURS * 60 * 60 * 1000,
   };
   const payload = b64url(JSON.stringify(claims));
-  return `${payload}.${sign(payload)}`;
+  return `${payload}.${sign(payload, key)}`;
 }
 
 // Returns the claims for a token this server issued and that has not expired,
@@ -57,12 +69,15 @@ export function issueToken(email: string): string {
 export function verifyToken(token: string | null | undefined): AdminClaims | null {
   if (!token) return null;
 
+  const key = secret();
+  if (!key) return null; // fail closed: no secret means nothing verifies
+
   const dot = token.lastIndexOf(".");
   if (dot < 1) return null;
 
   const payload = token.slice(0, dot);
   const provided = token.slice(dot + 1);
-  const expected = sign(payload);
+  const expected = sign(payload, key);
 
   // Constant time compare so a wrong signature cannot be found byte by byte
   const a = Buffer.from(provided);

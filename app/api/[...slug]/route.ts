@@ -987,7 +987,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
     // HMAC signed and time limited. Every other route verifies this before
     // touching the database.
-    return ok({ success: true, token: issueToken(email), admin: cam(admin) });
+    const token = issueToken(email);
+    if (!token) {
+      return err(
+        "This server cannot sign you in because no session secret is configured. " +
+        "Set ADMIN_TOKEN_SECRET in the site environment variables and redeploy.",
+        500
+      );
+    }
+    return ok({ success: true, token, admin: cam(admin) });
   }
 
   // POST /add-admin
