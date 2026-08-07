@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { issueToken, verifyToken, bearerFrom } from "@/lib/adminToken";
+import { renderCertificate, SAMPLE_SNAPSHOT, starterFields } from "@/lib/certificate";
+
+// Where a certificate's QR code and verification line point. Set
+// NEXT_PUBLIC_STUDENT_URL if the student site moves.
+const STUDENT_SITE = (process.env.NEXT_PUBLIC_STUDENT_URL || "https://giftededu.tech")
+  .replace(/\/$/, "");
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -86,7 +92,9 @@ function examRow(body: Record<string, unknown>) {
 // handler and rejects anything without a token this server signed.
 //
 // Only the login route is public, for the obvious reason.
-const PUBLIC_ROUTES = new Set(["admin-login"]);
+// certificate-pdf is public because the student downloading it has no admin
+// session. It is protected by an unguessable download key instead.
+const PUBLIC_ROUTES = new Set(["admin-login", "certificate-pdf"]);
 
 function unauthorized() {
   return NextResponse.json({ error: "Your session has expired. Sign in again." }, { status: 401 });
@@ -399,6 +407,56 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       .from("exam_candidates").select("*").eq("session_id", p1).order("full_name");
 
     return ok({ session: cam(session), candidates: rows(candidates) });
+  }
+
+  // GET /certificate-pdf/:downloadKey — public, this is the student's download.
+  //
+  // Keyed by the random download_key rather than the serial. Serials are
+  // sequential and quotable by design, so hanging the PDF off one would let
+  // anybody walk the range and collect other people's certificates.
+  if (p0 === "certificate-pdf" && p1) {
+    const { data: cert } = await supabase
+      .from("certificates").select("*").eq("download_key", p1).maybeSingle();
+
+    if (!cert) return err("That certificate link is not valid.", 404);
+    if (cert.revoked_at) return err("This certificate has been withdrawn.", 410);
+
+    const { data: tpl } = await supabase
+      .from("certificate_templates").select("*").eq("id", cert.template_id).maybeSingle();
+    if (!tpl) return err("The design for this certificate is missing.", 404);
+
+    const bytes = await renderCertificate({
+      fields: tpl.fields || [],
+      backgroundUrl: tpl.background_url,
+      orientation: tpl.orientation,
+      snapshot: cert.snapshot || {},
+      verifyUrl: `${STUDENT_SITE}/verify/${cert.serial}`,
+    });
+
+    const who = String(cert.snapshot?.candidate_name || "certificate")
+      .replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+    return new NextResponse(Buffer.from(bytes), {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${who}-${cert.serial}.pdf"`,
+        "Cache-Control": "private, max-age=300",
+      },
+    });
+  }
+
+  // GET /certificate-templates
+  if (p0 === "certificate-templates") {
+    const { data } = await supabase
+      .from("certificate_templates").select("*").order("created_at", { ascending: false });
+    return ok({ templates: rows(data) });
+  }
+
+  // GET /session-certificates/:sessionId
+  if (p0 === "session-certificates" && p1) {
+    const { data } = await supabase
+      .from("certificates").select("*").eq("session_id", p1).order("issued_at", { ascending: false });
+    return ok({ certificates: rows(data) });
   }
 
   // GET /exam-transcript/:candidateId — everything needed to settle a challenge
@@ -1030,6 +1088,68 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok({ announcement: cam(data) });
   }
 
+  // POST /preview-certificate — render whatever is on the editor canvas right
+  // now against sample data, so a design can be checked before anyone earns one
+  if (p0 === "preview-certificate") {
+    const bytes = await renderCertificate({
+      fields: body.fields || [],
+      backgroundUrl: body.backgroundUrl || null,
+      orientation: body.orientation || "landscape",
+      snapshot: { ...SAMPLE_SNAPSHOT, ...(body.snapshot || {}) },
+      verifyUrl: `${STUDENT_SITE}/verify/SAMPLE-2026-0001`,
+    });
+    return new NextResponse(Buffer.from(bytes), {
+      headers: { "Content-Type": "application/pdf", "Content-Disposition": "inline; filename=preview.pdf" },
+    });
+  }
+
+  // POST /add-certificate-template
+  if (p0 === "add-certificate-template") {
+    const { data, error } = await supabase.from("certificate_templates").insert({
+      name:           body.name || "Untitled certificate",
+      background_url: body.backgroundUrl || null,
+      theme:          body.theme || "plain",
+      orientation:    body.orientation || "landscape",
+      fields:         body.fields || starterFields(body.theme || "plain"),
+    }).select().single();
+    if (error) return err(error.message);
+    return ok({ template: cam(data) });
+  }
+
+  // POST /issue-certificates
+  if (p0 === "issue-certificates") {
+    const { data, error } = await supabase.rpc("admin_issue_certificates", {
+      p_session_id: body.sessionId,
+      p_candidate_ids: body.candidateIds?.length ? body.candidateIds : null,
+      p_actor: actorFrom(req),
+      p_reason: body.reason || null,
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
+  // POST /revoke-certificate
+  if (p0 === "revoke-certificate") {
+    const { error } = await supabase.rpc("admin_revoke_certificate", {
+      p_certificate_id: body.certificateId,
+      p_actor: actorFrom(req),
+      p_reason: body.reason || null,
+    });
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
+  // POST /reissue-certificate
+  if (p0 === "reissue-certificate") {
+    const { data, error } = await supabase.rpc("admin_reissue_certificate", {
+      p_certificate_id: body.certificateId,
+      p_actor: actorFrom(req),
+      p_reason: body.reason || null,
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
   // POST /create-exam-session
   if (p0 === "create-exam-session") {
     if (!body.examId) return err("Choose which assessment this sitting uses.");
@@ -1503,6 +1623,22 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ track: cam(data) });
   }
 
+  // PUT /update-certificate-template/:id
+  if (p0 === "update-certificate-template" && p1) {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (body.name          !== undefined) patch.name           = body.name;
+    if (body.backgroundUrl !== undefined) patch.background_url = body.backgroundUrl || null;
+    if (body.theme         !== undefined) patch.theme          = body.theme;
+    if (body.orientation   !== undefined) patch.orientation    = body.orientation;
+    if (body.fields        !== undefined) patch.fields         = body.fields;
+    if (body.isActive      !== undefined) patch.is_active      = body.isActive;
+
+    const { data, error } = await supabase
+      .from("certificate_templates").update(patch).eq("id", p1).select().single();
+    if (error) return err(error.message);
+    return ok({ template: cam(data) });
+  }
+
   // PUT /update-exam-session/:id
   if (p0 === "update-exam-session" && p1) {
     const patch: Record<string, unknown> = {};
@@ -1515,6 +1651,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.shuffleQuestions       !== undefined) patch.shuffle_questions         = body.shuffleQuestions;
     if (body.lockToDevice           !== undefined) patch.lock_to_device            = body.lockToDevice;
     if (body.maxTabSwitches         !== undefined) patch.max_tab_switches          = body.maxTabSwitches;
+    if (body.certificateMode        !== undefined) patch.certificate_mode          = body.certificateMode;
+    if (body.certificateBands       !== undefined) patch.certificate_bands         = body.certificateBands;
 
     const { data, error } = await supabase.from("exam_sessions").update(patch).eq("id", p1).select().single();
     if (error) return err(error.message);
@@ -1775,6 +1913,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
   if (p0 === "delete-exam-session" && p1) {
     const { error } = await supabase.from("exam_sessions").delete().eq("id", p1);
     if (error) return err(error.message);
+    return ok({ success: true });
+  }
+  if (p0 === "delete-certificate-template" && p1) {
+    const { error } = await supabase.from("certificate_templates").delete().eq("id", p1);
+    if (error) return err("This design is in use by issued certificates, so it cannot be deleted. Switch it off instead.");
     return ok({ success: true });
   }
   if (p0 === "delete-candidate" && p1) {

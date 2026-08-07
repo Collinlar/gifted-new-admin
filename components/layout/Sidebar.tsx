@@ -40,6 +40,7 @@ const NAV: NavGroup[] = [
       { href: "/flashcards", label: "Flash Cards", icon: Zap },
       { href: "/timed-challenges", label: "Timed Challenges", icon: Brain },
       { href: "/exam-mode", label: "Exam Mode", icon: Layers },
+      { href: "/certificates", label: "Certificates", icon: Award },
       { href: "/pathways", label: "Pathways", icon: Map },
       { href: "/tracks", label: "Tracks", icon: Compass },
       { href: "/track-tagging", label: "Track Tagging", icon: Tag },

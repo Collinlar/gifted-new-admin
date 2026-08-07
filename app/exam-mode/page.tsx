@@ -14,7 +14,7 @@ import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
   Printer, ChevronRight, RefreshCw, Play, Square, Link2, Pause,
   ShieldCheck, FileText, History, Send, Lock, Unlock, X, AlertTriangle,
-  CheckCircle2, XCircle,
+  CheckCircle2, XCircle, Award, Trash2,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -28,7 +28,20 @@ interface Session {
   pausedAt?: string | null;
   resultsPublishedAt?: string | null; resultsPublishedBy?: string | null;
   resultsShowBreakdown: boolean;
+  certificateMode: "none" | "manual" | "on_publish" | "on_submit";
+  certificateBands: Band[];
   counts?: Record<string, number>;
+}
+
+interface Band { minPercent: number; templateId: string; band: string }
+
+interface CertTemplate { id: string; name: string; backgroundUrl?: string | null }
+
+interface Certificate {
+  id: string; serial: string; downloadKey: string; candidateId: string;
+  band?: string; issuedAt: string; issuedBy: string;
+  revokedAt?: string | null; revokeReason?: string | null;
+  snapshot: Record<string, string | number>;
 }
 
 interface Candidate {
@@ -100,6 +113,9 @@ const ACTION_LABEL: Record<string, string> = {
   "session.set_device_lock":  "Changed the device lock setting",
   "session.open":             "Opened the exam",
   "session.close":            "Closed the exam",
+  "certificate.issue":        "Issued certificates",
+  "certificate.revoke":       "Withdrew a certificate",
+  "certificate.reissue":      "Reissued a certificate",
 };
 
 // Actions that change a candidate's standing or the clock always need a written
@@ -107,6 +123,7 @@ const ACTION_LABEL: Record<string, string> = {
 const REASON_REQUIRED = new Set([
   "reset", "disqualify", "reinstate", "extend", "reduce",
   "extend_all", "pause", "unpublish_results", "close",
+  "revoke_certificate", "reissue_certificate",
 ]);
 
 const fmt = (s?: string | null) =>
@@ -211,7 +228,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [session, setSession]       = useState<Session | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading]       = useState(true);
-  const [tab, setTab]               = useState<"candidates" | "activity" | "audit">("candidates");
+  const [tab, setTab]               = useState<"candidates" | "certificates" | "activity" | "audit">("candidates");
   const [addOpen, setAddOpen]       = useState(false);
   const [live, setLive]             = useState(true);
   const [copied, setCopied]         = useState(false);
@@ -220,6 +237,8 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [notice, setNotice]         = useState("");
   const [transcriptFor, setTranscriptFor] = useState<Candidate | null>(null);
   const [panelFor, setPanelFor] = useState<Candidate | null>(null);
+  // Bumped after a certificate action so the tab remounts and refetches
+  const [certVersion, setCertVersion] = useState(0);
 
   // Pending action awaiting a reason
   const [ask, setAsk] = useState<null | {
@@ -269,7 +288,15 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
     if (!ask) return;
     setError(""); setNotice("");
     try {
-      if (ask.scope === "session") {
+      // Certificate actions carry a certificate id, not a candidate id, and go
+      // to their own endpoints.
+      if (ask.action === "revoke_certificate") {
+        await api.post("/revoke-certificate", { certificateId: ask.candidateId, reason });
+        setCertVersion((v) => v + 1);
+      } else if (ask.action === "reissue_certificate") {
+        await api.post("/reissue-certificate", { certificateId: ask.candidateId, reason });
+        setCertVersion((v) => v + 1);
+      } else if (ask.scope === "session") {
         const res = await api.post("/session-action", {
           sessionId, action: ask.action, value: ask.value ?? 0, flag: ask.flag ?? null, reason,
         });
@@ -506,9 +533,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           {/* Tabs */}
           <div className="flex items-center gap-1 border-b border-border">
             {([
-              ["candidates", "Candidates", Users],
-              ["activity",   "Activity log", History],
-              ["audit",      "Admin audit", ShieldCheck],
+              ["candidates",   "Candidates", Users],
+              ["certificates", "Certificates", Award],
+              ["activity",     "Activity log", History],
+              ["audit",        "Admin audit", ShieldCheck],
             ] as const).map(([v, label, Icon]) => (
               <button key={v} onClick={() => setTab(v)}
                 className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
@@ -565,6 +593,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
             </Card>
           )}
 
+          {tab === "certificates" && (
+            <CertificatesTab key={certVersion} session={session} candidates={candidates}
+              onChanged={load} onRequest={request} />
+          )}
           {tab === "activity" && <ActivityTab sessionId={sessionId} />}
           {tab === "audit"    && <AuditTab sessionId={sessionId} />}
         </div>
@@ -1042,6 +1074,326 @@ function TranscriptModal({ candidate, onClose }: { candidate: Candidate; onClose
               )}
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Certificates tab ───────────────────────────────────────────────────────
+
+const MODE_HELP: Record<Session["certificateMode"], string> = {
+  none:       "No certificates for this sitting.",
+  manual:     "You choose when to issue. Nothing goes out until you say so.",
+  on_publish: "Everyone eligible is issued the moment you publish results.",
+  on_submit:  "Each candidate is issued the moment they submit.",
+};
+
+function CertificatesTab({ session, candidates, onChanged, onRequest }: {
+  session: Session | null;
+  candidates: Candidate[];
+  onChanged: () => void;
+  onRequest: (title: string, action: string, scope: "session" | "candidate",
+              opts?: { candidateId?: string; value?: number; flag?: boolean }) => void;
+}) {
+  const [templates, setTemplates] = useState<CertTemplate[]>([]);
+  const [certs, setCerts] = useState<Certificate[]>([]);
+  const [bands, setBands] = useState<Band[]>(session?.certificateBands || []);
+  const [mode, setMode] = useState<Session["certificateMode"]>(session?.certificateMode || "none");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [confirmIssue, setConfirmIssue] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [t, c] = await Promise.all([
+        api.get("/certificate-templates"),
+        api.get(`/session-certificates/${session?.id}`),
+      ]);
+      setTemplates(t.data.templates || []);
+      setCerts(c.data.certificates || []);
+    } catch { /* leave as is */ }
+    finally { setLoading(false); }
+  }, [session?.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const saveSettings = async (nextMode = mode, nextBands = bands) => {
+    setError("");
+    try {
+      await api.put(`/update-exam-session/${session?.id}`, {
+        certificateMode: nextMode, certificateBands: nextBands,
+      });
+      onChanged();
+    } catch (e) { setError(serverMessage(e, "Could not save those settings.")); }
+  };
+
+  const addBand = () => {
+    const next = [...bands, { minPercent: 50, templateId: templates[0]?.id || "", band: "Participation" }]
+      .sort((a, b) => b.minPercent - a.minPercent);
+    setBands(next); saveSettings(mode, next);
+  };
+
+  const patchBand = (i: number, p: Partial<Band>) => {
+    const next = bands.map((b, idx) => (idx === i ? { ...b, ...p } : b))
+      .sort((a, b) => b.minPercent - a.minPercent);
+    setBands(next); saveSettings(mode, next);
+  };
+
+  const removeBand = (i: number) => {
+    const next = bands.filter((_, idx) => idx !== i);
+    setBands(next); saveSettings(mode, next);
+  };
+
+  const liveCerts = certs.filter((c) => !c.revokedAt);
+  const byCandidate = Object.fromEntries(liveCerts.map((c) => [c.candidateId, c]));
+
+  // A band only works if its design still exists. One that points at nothing
+  // cannot issue anyone, so it must not be counted or silently attempted.
+  const bandUsable = (b: Band) => !!b.templateId && templates.some((t) => t.id === b.templateId);
+  const brokenBands = bands.filter((b) => !bandUsable(b));
+
+  // Who a bulk issue would actually reach, worked out the same way the database
+  // does it, so the number on the button is the real number.
+  const eligible = candidates.filter((c) => {
+    if (c.status !== "submitted") return false;
+    if (byCandidate[c.id]) return false;
+    const pct = c.totalQuestions ? Math.round(((c.score ?? 0) / c.totalQuestions) * 100) : 0;
+    const matched = bands
+      .filter((b) => b.minPercent <= pct)
+      .sort((a, b) => b.minPercent - a.minPercent)[0];
+    return !!matched && bandUsable(matched);
+  });
+
+  const issue = async (reason: string) => {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const res = await api.post("/issue-certificates", {
+        sessionId: session?.id,
+        candidateIds: eligible.map((c) => c.id),
+        reason,
+      });
+      setNotice(`${res.data.issued} certificate${res.data.issued === 1 ? "" : "s"} issued.`);
+      setConfirmIssue(false);
+      load(); onChanged();
+    } catch (e) { setError(serverMessage(e, "Could not issue the certificates.")); }
+    finally { setBusy(false); }
+  };
+
+  const downloadUrl = (c: Certificate) => `/api/certificate-pdf/${c.downloadKey}`;
+
+  return (
+    <div className="space-y-4">
+      {error &&  <p className="text-sm text-danger bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
+      {notice && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">{notice}</p>}
+
+      {templates.length === 0 && !loading && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-800">
+            You have no certificate designs yet. Create one under Certificates in the sidebar,
+            then come back and attach it to a score band.
+          </p>
+        </div>
+      )}
+
+      {/* When they go out */}
+      <Card title="When certificates go out">
+        <div className="space-y-3">
+          <div className="grid sm:grid-cols-2 gap-2">
+            {(["none", "manual", "on_publish", "on_submit"] as const).map((m) => (
+              <button key={m} onClick={() => { setMode(m); saveSettings(m, bands); }}
+                className={`text-left px-3 py-2.5 rounded-xl border transition-colors ${
+                  mode === m ? "border-primary bg-primary-light/40" : "border-border hover:border-primary/50"
+                }`}>
+                <p className={`text-sm font-medium ${mode === m ? "text-primary" : "text-ink"}`}>
+                  {m === "none" ? "Off" : m === "manual" ? "Only when I say"
+                    : m === "on_publish" ? "When I publish results" : "As each candidate submits"}
+                </p>
+                <p className="text-xs text-muted mt-0.5">{MODE_HELP[m]}</p>
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted">
+            Nobody who was stopped for cheating, or who never submitted, is ever issued a certificate.
+            That rule holds whichever option you pick.
+          </p>
+        </div>
+      </Card>
+
+      {/* Bands */}
+      <Card title="Who gets which certificate"
+        action={
+          <Button size="sm" variant="secondary" onClick={addBand} disabled={templates.length === 0}>
+            <Plus size={13} /> Add a band
+          </Button>
+        }>
+        {bands.length === 0 ? (
+          <p className="text-sm text-muted py-6 text-center">
+            No bands set, so nobody qualifies. Add one to decide the lowest score that earns a certificate.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {bands.map((b, i) => (
+              <div key={i} className={`flex items-center gap-2 flex-wrap border rounded-xl px-3 py-2.5 ${
+                bandUsable(b) ? "border-border" : "border-amber-300 bg-amber-50/60"
+              }`}>
+                <span className="text-xs text-muted">Scoring</span>
+                <input type="number" min={0} max={100} value={b.minPercent}
+                  onChange={(e) => patchBand(i, { minPercent: Number(e.target.value) })}
+                  className="w-16 border border-border rounded-lg px-2 py-1 text-sm focus:outline-none focus:border-primary" />
+                <span className="text-xs text-muted">% or above gets</span>
+                <input value={b.band} placeholder="Distinction"
+                  onChange={(e) => patchBand(i, { band: e.target.value })}
+                  className="w-32 border border-border rounded-lg px-2 py-1 text-sm focus:outline-none focus:border-primary" />
+                <span className="text-xs text-muted">using</span>
+                <select value={b.templateId} onChange={(e) => patchBand(i, { templateId: e.target.value })}
+                  className="flex-1 min-w-[10rem] border border-border rounded-lg px-2 py-1 text-sm focus:outline-none focus:border-primary">
+                  <option value="">Pick a design...</option>
+                  {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <button onClick={() => removeBand(i)} className="p-1.5 rounded-lg text-subtle hover:text-danger">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+            {brokenBands.length > 0 && (
+              <p className="text-xs text-amber-700 flex items-start gap-1.5">
+                <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                {brokenBands.length === 1 ? "One band has no design attached" : `${brokenBands.length} bands have no design attached`},
+                so nobody in {brokenBands.length === 1 ? "it" : "them"} can be issued. Pick a design above,
+                or remove the band.
+              </p>
+            )}
+            <p className="text-xs text-muted">
+              A candidate gets the highest band they clear. Anyone below every band gets nothing.
+            </p>
+          </div>
+        )}
+      </Card>
+
+      {/* Issue */}
+      <Card title={`Issued certificates (${liveCerts.length})`}
+        action={
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={load}><RefreshCw size={13} /></Button>
+            <Button size="sm" onClick={() => setConfirmIssue(true)} disabled={eligible.length === 0 || busy}>
+              <Award size={13} /> Issue to {eligible.length} candidate{eligible.length === 1 ? "" : "s"}
+            </Button>
+          </div>
+        }
+        padding={false}
+      >
+        {loading ? <Spinner text="Loading certificates..." /> : certs.length === 0 ? (
+          <div className="py-12 text-center">
+            <Award size={26} className="text-subtle mx-auto mb-3" />
+            <p className="text-sm text-muted">No certificates issued yet.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border max-h-[26rem] overflow-y-auto">
+            {certs.map((c) => (
+              <div key={c.id} className={`px-4 py-2.5 flex items-center gap-3 ${c.revokedAt ? "opacity-60" : ""}`}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-medium text-ink">{c.snapshot?.candidate_name as string}</p>
+                    {c.band && (
+                      <span className="px-2 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                        {c.band}
+                      </span>
+                    )}
+                    {c.revokedAt && (
+                      <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-danger border border-red-200">
+                        Withdrawn
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted font-mono mt-0.5">{c.serial}</p>
+                  <p className="text-xs text-subtle">
+                    Issued {fmt(c.issuedAt)} by {c.issuedBy}
+                    {c.revokeReason ? ` · withdrawn: ${c.revokeReason}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {!c.revokedAt && (
+                    <a href={downloadUrl(c)} target="_blank" rel="noreferrer" title="Download the PDF"
+                      className="p-1.5 rounded-lg text-subtle hover:text-primary hover:bg-surface">
+                      <Download size={14} />
+                    </a>
+                  )}
+                  {!c.revokedAt && (
+                    <>
+                      <button title="Reissue with the current details"
+                        onClick={() => onRequest("Reissue this certificate", "reissue_certificate", "candidate", { candidateId: c.id })}
+                        className="p-1.5 rounded-lg text-subtle hover:text-ink hover:bg-surface">
+                        <RefreshCw size={13} />
+                      </button>
+                      <button title="Withdraw this certificate"
+                        onClick={() => onRequest("Withdraw this certificate", "revoke_certificate", "candidate", { candidateId: c.id })}
+                        className="p-1.5 rounded-lg text-subtle hover:text-danger hover:bg-red-50">
+                        <XCircle size={13} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Name check before a bulk issue */}
+      {confirmIssue && (
+        <NameCheckModal
+          people={eligible}
+          busy={busy}
+          onCancel={() => setConfirmIssue(false)}
+          onConfirm={issue}
+        />
+      )}
+    </div>
+  );
+}
+
+// A printed name is permanent, and names arrive from whatever spreadsheet was
+// uploaded. This is the last cheap moment to catch a typo.
+function NameCheckModal({ people, busy, onCancel, onConfirm }: {
+  people: Candidate[]; busy: boolean; onCancel: () => void; onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center px-4">
+      <div className="bg-card rounded-2xl max-w-lg w-full max-h-[85vh] flex flex-col">
+        <div className="px-6 pt-5 pb-3">
+          <h3 className="text-lg font-semibold text-ink">Check the names before issuing</h3>
+          <p className="text-sm text-muted mt-1">
+            These names print exactly as they appear here. A typo becomes a certificate someone
+            has to ask you to redo, so read them once.
+          </p>
+        </div>
+        <div className="px-6 flex-1 overflow-y-auto">
+          <div className="border border-border rounded-xl divide-y divide-border">
+            {people.map((p) => (
+              <div key={p.id} className="px-3 py-2 flex items-center justify-between gap-3">
+                <span className="text-sm text-ink">{p.fullName}</span>
+                <span className="text-xs text-muted shrink-0">
+                  {p.score}/{p.totalQuestions}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="px-6 py-4 space-y-3">
+          <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
+            placeholder="Optional note, for example: Round 1 results confirmed by the panel"
+            className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary resize-none" />
+          <div className="flex gap-3">
+            <Button onClick={() => onConfirm(reason.trim())} disabled={busy}>
+              {busy ? "Issuing certificates..." : `Yes, issue ${people.length}`}
+            </Button>
+            <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
+          </div>
         </div>
       </div>
     </div>
