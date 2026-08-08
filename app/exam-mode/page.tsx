@@ -244,6 +244,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [ask, setAsk] = useState<null | {
     title: string; action: string; scope: "session" | "candidate";
     candidateId?: string; value?: number; flag?: boolean; required: boolean;
+    note?: string;
   }>(null);
 
   useEffect(() => { setSiteUrl(localStorage.getItem("giftedSiteUrl") || ""); }, []);
@@ -281,7 +282,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   // an actor and, where it matters, a reason.
   const request = (
     title: string, action: string, scope: "session" | "candidate",
-    opts: { candidateId?: string; value?: number; flag?: boolean } = {}
+    opts: { candidateId?: string; value?: number; flag?: boolean; note?: string } = {}
   ) => setAsk({ title, action, scope, required: REASON_REQUIRED.has(action), ...opts });
 
   const run = async (reason: string) => {
@@ -300,7 +301,11 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
         const res = await api.post("/session-action", {
           sessionId, action: ask.action, value: ask.value ?? 0, flag: ask.flag ?? null, reason,
         });
-        if (res.data?.affected) setNotice(`Applied to ${res.data.affected} candidate${res.data.affected === 1 ? "" : "s"}.`);
+        if (res.data?.clearedWindow) {
+          setNotice("The exam is open. Its scheduled times had already passed, so they were cleared. It now stays open until you close it.");
+        } else if (res.data?.affected) {
+          setNotice(`Applied to ${res.data.affected} candidate${res.data.affected === 1 ? "" : "s"}.`);
+        }
       } else {
         await api.post("/candidate-action", {
           candidateId: ask.candidateId, action: ask.action, minutes: ask.value ?? 0, reason,
@@ -372,8 +377,24 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
             <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft size={14} /> All sittings</Button>
             <div className="flex items-center gap-2 flex-wrap">
               {session?.status !== "live" && !paused && (
-                <Button size="sm" onClick={() => request("Open the exam", "open", "session")}>
-                  <Play size={13} /> Open the exam
+                <Button size="sm" onClick={() => {
+                  // Login gates on the window separately from the status, so a
+                  // stale schedule would leave the sitting reading "live" while
+                  // turning every candidate away. Say so before it happens.
+                  const now = Date.now();
+                  const ended   = session?.endsAt   && new Date(session.endsAt).getTime()   <= now;
+                  const notYet  = session?.startsAt && new Date(session.startsAt).getTime() >  now;
+                  request(
+                    session?.status === "closed" ? "Reopen the exam" : "Open the exam",
+                    "open", "session",
+                    ended || notYet
+                      ? { note: ended
+                          ? "This sitting's closing time has already passed. Opening it will clear that time, so it stays open until you close it by hand."
+                          : "This sitting is scheduled to open later. Opening it now will clear that scheduled time." }
+                      : {}
+                  );
+                }}>
+                  <Play size={13} /> {session?.status === "closed" ? "Reopen the exam" : "Open the exam"}
                 </Button>
               )}
               {paused ? (
@@ -617,7 +638,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
         )}
 
         {ask && (
-          <ReasonModal title={ask.title} required={ask.required}
+          <ReasonModal title={ask.title} required={ask.required} note={ask.note}
             onCancel={() => setAsk(null)} onConfirm={run} />
         )}
 
@@ -874,8 +895,9 @@ function Row({ label, value }: { label: string; value: string }) {
 
 // ── Reason capture ─────────────────────────────────────────────────────────
 
-function ReasonModal({ title, required, onCancel, onConfirm }: {
-  title: string; required: boolean; onCancel: () => void; onConfirm: (reason: string) => void;
+function ReasonModal({ title, required, note, onCancel, onConfirm }: {
+  title: string; required: boolean; note?: string;
+  onCancel: () => void; onConfirm: (reason: string) => void;
 }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -885,6 +907,14 @@ function ReasonModal({ title, required, onCancel, onConfirm }: {
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center px-4">
       <div className="bg-card rounded-2xl p-6 max-w-md w-full">
         <h3 className="text-lg font-semibold text-ink mb-1">{title}</h3>
+
+        {note && (
+          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 my-3">
+            <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-800">{note}</p>
+          </div>
+        )}
+
         <p className="text-sm text-muted mb-4">
           {required
             ? "This is recorded against your account with the reason you give. Say what happened."

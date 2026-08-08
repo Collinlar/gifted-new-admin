@@ -1,7 +1,13 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- EXAM MODE v2 — dispute resolution, tamper-evident audit, invigilator controls
 --
--- Run this after exam_mode.sql. It is idempotent and safe over a live install.
+-- RUN ORDER:  exam_mode.sql  →  exam_mode_v2.sql  →  certificates.sql
+--
+-- Always finish with certificates.sql. It redefines exam_candidate_login with
+-- the certificate lookup, so replaying this file afterwards would silently
+-- remove certificates from the student's results page.
+--
+-- This file is idempotent and safe over a live install.
 --
 -- What this adds
 -- --------------
@@ -551,6 +557,7 @@ DECLARE
   s        exam_sessions;
   paused_s integer;
   affected integer := 0;
+  cleared  boolean := false;
 BEGIN
   SELECT * INTO s FROM exam_sessions WHERE id = p_session_id;
   IF NOT FOUND THEN RAISE EXCEPTION 'That exam sitting no longer exists.'; END IF;
@@ -601,11 +608,27 @@ BEGIN
   ELSIF p_action = 'set_device_lock' THEN
     UPDATE exam_sessions SET lock_to_device = COALESCE(p_flag, false) WHERE id = s.id;
 
-  ELSIF p_action IN ('open', 'close') THEN
-    UPDATE exam_sessions
-       SET status = CASE WHEN p_action = 'open' THEN 'live' ELSE 'closed' END,
-           paused_at = NULL
-     WHERE id = s.id;
+  ELSIF p_action = 'close' THEN
+    UPDATE exam_sessions SET status = 'closed', paused_at = NULL WHERE id = s.id;
+
+  ELSIF p_action = 'open' THEN
+    -- Opening is an explicit instruction to let candidates in now. A closing
+    -- time already in the past, or an opening time still in the future,
+    -- contradicts that instruction: login checks the window separately from
+    -- the status, so the sitting would read "live" and still turn everyone
+    -- away at the door.
+    --
+    -- Clear whichever boundary contradicts being open, and report it back so
+    -- the change is visible rather than silent.
+    cleared := (s.ends_at   IS NOT NULL AND s.ends_at   <= now())
+            OR (s.starts_at IS NOT NULL AND s.starts_at >  now());
+
+    UPDATE exam_sessions SET
+      status    = 'live',
+      paused_at = NULL,
+      starts_at = CASE WHEN starts_at IS NOT NULL AND starts_at > now()  THEN NULL ELSE starts_at END,
+      ends_at   = CASE WHEN ends_at   IS NOT NULL AND ends_at  <= now()  THEN NULL ELSE ends_at   END
+    WHERE id = s.id;
 
   ELSE
     RAISE EXCEPTION 'Unknown action: %', p_action;
@@ -614,11 +637,11 @@ BEGIN
   PERFORM _exam_audit(
     s.id, NULL, p_actor, 'session.' || p_action,
     jsonb_build_object('value', p_value, 'flag', p_flag, 'affected', affected,
-                       'sitting', s.title),
+                       'sitting', s.title, 'clearedWindow', cleared),
     p_reason
   );
 
-  RETURN jsonb_build_object('ok', true, 'affected', affected);
+  RETURN jsonb_build_object('ok', true, 'affected', affected, 'clearedWindow', cleared);
 END;
 $$;
 
