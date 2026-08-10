@@ -139,8 +139,8 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
     try {
       const url = await uploadFile(file);
       insertHtmlAtCursor(`<img src="${url}" alt="" style="${IMG_STYLE}" />`);
-    } catch {
-      setUploadError("The image did not upload. Check your connection and try again.");
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "The image did not upload. Try again.");
     } finally {
       setUploading(false);
     }

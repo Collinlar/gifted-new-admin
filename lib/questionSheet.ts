@@ -6,7 +6,7 @@ import * as XLSX from "xlsx";
 
 export const COLUMNS = [
   "question", "option_a", "option_b", "option_c", "option_d", "option_e",
-  "correct", "explanation", "image_url",
+  "correct", "explanation", "image_url", "image_title",
 ] as const;
 
 const LETTERS = ["A", "B", "C", "D", "E"] as const;
@@ -18,6 +18,7 @@ export interface ParsedQuestion {
   correctLetter: string;  // A to E
   explanation: string;
   image: string;
+  imageTitle: string;     // caption printed under the picture, also its alt text
   errors: string[];       // blocking: row cannot be imported
   warnings: string[];     // non-blocking: worth a look
   skip: boolean;          // excluded by the user
@@ -31,20 +32,22 @@ export function downloadTemplate() {
       correct: "C",
       explanation: "7 × 8 = 56",
       image_url: "",
+      image_title: "",
     },
     {
-      question: "Which planet is closest to the Sun?",
-      option_a: "Venus", option_b: "Mercury", option_c: "Earth", option_d: "Mars", option_e: "",
-      correct: "B",
-      explanation: "Mercury orbits nearest the Sun.",
-      image_url: "",
+      question: "The factor tree of 2023 is shown below. How many whole numbers divide it?",
+      option_a: "3", option_b: "5", option_c: "6", option_d: "8", option_e: "",
+      correct: "C",
+      explanation: "2023 = 7 × 17 × 17, giving six divisors.",
+      image_url: "https://example.com/factor-tree.png",
+      image_title: "Figure 1: the factor tree of 2023",
     },
   ];
 
   const ws = XLSX.utils.json_to_sheet(sample, { header: COLUMNS as unknown as string[] });
   ws["!cols"] = [
     { wch: 52 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
-    { wch: 9 }, { wch: 40 }, { wch: 30 },
+    { wch: 9 }, { wch: 40 }, { wch: 30 }, { wch: 30 },
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Questions");
@@ -82,6 +85,7 @@ export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
     // Files in the wild head this column "Image", "image url" or "image_url",
     // and silently dropping the pictures is worse than accepting all three.
     const image = str(row.image_url ?? row.image ?? row.imageurl ?? row.image_link);
+    const imageTitle = str(row.image_title ?? row.image_caption ?? row.imagetitle);
 
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -117,7 +121,7 @@ export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
     }
 
     return {
-      rowNumber, question, rawOptions, correctLetter, explanation, image,
+      rowNumber, question, rawOptions, correctLetter, explanation, image, imageTitle,
       errors, warnings, skip: errors.length > 0,
     };
   });
@@ -138,6 +142,7 @@ export function toExamQuestions(rows: ParsedQuestion[]) {
         correctAnswer: r.rawOptions[idx] ?? "",
         explanation: r.explanation,
         image: r.image,
+        imageTitle: r.imageTitle,
       };
     });
 }

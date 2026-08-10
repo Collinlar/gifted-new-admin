@@ -9,8 +9,8 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import MathEditor from "@/components/ui/MathEditor";
 import api from "@/lib/api";
-import { uploadFile } from "@/lib/upload";
-import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, ImagePlus } from "lucide-react";
+import ImageField from "@/components/ui/ImageField";
+import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const LEVELS = ["Beginner", "Intermediate", "Advanced"];
@@ -27,6 +27,7 @@ interface Question {
   answers: Answer[];
   explanation: string;
   image?: string;
+  imageTitle?: string;
   expanded: boolean;
 }
 
@@ -56,6 +57,7 @@ export default function AddQuizPage() {
   const [level, setLevel] = useState("");
   const [difficulty, setDifficulty] = useState("");
   const [description, setDescription] = useState("");
+  const [coverImage, setCoverImage] = useState("");
   const [instructions, setInstructions] = useState<string[]>([""]);
   const [timeLimit, setTimeLimit] = useState("");
   const [numQuestions, setNumQuestions] = useState("");
@@ -73,7 +75,6 @@ export default function AddQuizPage() {
 
   // Questions
   const [questions, setQuestions] = useState<Question[]>([blankQuestion()]);
-  const [uploadingImage, setUploadingImage] = useState<number | null>(null);
 
   const toggleGrade = (g: string) => {
     setGrades((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]);
@@ -95,18 +96,6 @@ export default function AddQuizPage() {
     const u = [...questions]; u[qi] = { ...u[qi], [field]: val }; setQuestions(u);
   };
 
-  // A diagram the whole question refers to reads better above the question than
-  // embedded mid-sentence, so it gets its own slot separate from MathEditor.
-  const uploadQuestionImage = async (qi: number, file: File) => {
-    setUploadingImage(qi);
-    try {
-      updateQuestion(qi, "image", await uploadFile(file));
-    } catch {
-      setError("That image did not upload. Check your connection and try again.");
-    } finally {
-      setUploadingImage(null);
-    }
-  };
 
   const updateAnswer = (qi: number, ai: number, text: string) => {
     const u = [...questions];
@@ -136,6 +125,7 @@ export default function AddQuizPage() {
         level,
         difficulty,
         description,
+        image: coverImage || undefined,
         instructions: instructions.filter(Boolean),
         duration: timeLimit ? Number(timeLimit) : undefined,
         numberOfQuestions: numQuestions ? Number(numQuestions) : undefined,
@@ -156,6 +146,7 @@ export default function AddQuizPage() {
           correctAnswer: q.answers.find((a) => a.isCorrect)?.text || q.answers.filter(Boolean)[0]?.text || "",
           explanation: q.explanation,
           image: q.image,
+          imageTitle: q.imageTitle,
         })),
       };
       await api.post("/add-exam", payload);
@@ -212,6 +203,14 @@ export default function AddQuizPage() {
                   </select>
                 </div>
               </div>
+
+              {/* This is what identifies the assessment everywhere it is listed,
+                  so it belongs on the create form rather than only in edit. */}
+              <ImageField
+                label="Cover image"
+                value={coverImage}
+                onChange={setCoverImage}
+              />
 
               <div className="space-y-1">
                 <label className="text-sm font-medium text-ink">Description</label>
@@ -347,33 +346,15 @@ export default function AddQuizPage() {
                         rows={3}
                       />
 
-                      {/* Question diagram */}
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-ink">
-                          Question image <span className="text-muted font-normal text-xs">(shown above the question)</span>
-                        </label>
-                        {q.image ? (
-                          <div className="flex items-start gap-3 border border-border rounded-lg p-3">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={q.image} alt="" className="h-20 w-auto rounded object-contain border border-border" />
-                            <button type="button" onClick={() => updateQuestion(qi, "image", "")}
-                              className="text-xs font-semibold text-danger hover:underline">
-                              Remove this image
-                            </button>
-                          </div>
-                        ) : (
-                          <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-xs font-medium text-muted hover:border-primary hover:text-primary cursor-pointer transition-colors">
-                            <ImagePlus size={13} />
-                            {uploadingImage === qi ? "Adding your image..." : "Add a question image"}
-                            <input type="file" accept="image/*" className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) uploadQuestionImage(qi, f);
-                                e.target.value = "";
-                              }} />
-                          </label>
-                        )}
-                      </div>
+                      {/* Question diagram: paste a link or upload a file, both
+                          land in the same field the spreadsheet importer fills. */}
+                      <ImageField
+                        label="Question image (shown above the question)"
+                        value={q.image || ""}
+                        onChange={(url) => updateQuestion(qi, "image", url)}
+                        title={q.imageTitle || ""}
+                        onTitleChange={(t) => updateQuestion(qi, "imageTitle", t)}
+                      />
 
                       {/* Answer options */}
                       <div className="space-y-2">

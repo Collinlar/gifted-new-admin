@@ -443,6 +443,62 @@ BEGIN
 END;
 $$;
 
+-- ── Paper delivery, extended to carry image captions ───────────────────────
+--
+-- SUPERSEDES the exam_get_paper in exam_mode_v2.sql. The paper is built field
+-- by field so the answer key cannot leak, which also means a newly added field
+-- has to be named here or it silently never reaches the candidate.
+
+CREATE OR REPLACE FUNCTION exam_get_paper(p_token uuid)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_temp
+AS $$
+DECLARE
+  c    exam_candidates;
+  s    exam_sessions;
+  ex   record;
+  out_questions jsonb := '[]'::jsonb;
+  q    jsonb;
+  i    integer;
+BEGIN
+  c := _exam_resolve(p_token);
+  SELECT * INTO s FROM exam_sessions WHERE id = c.session_id;
+  SELECT questions, instructions INTO ex FROM exams WHERE id = s.exam_id;
+
+  IF c.status = 'submitted' THEN
+    RAISE EXCEPTION 'You have already submitted this exam.';
+  END IF;
+
+  FOREACH i IN ARRAY COALESCE(c.question_order, ARRAY[]::integer[]) LOOP
+    q := ex.questions -> i;
+    IF q IS NOT NULL THEN
+      out_questions := out_questions || jsonb_build_array(jsonb_build_object(
+        'idx',        i,
+        'question',   q ->> 'question',
+        'image',      q ->> 'image',
+        'imageTitle', q ->> 'imageTitle',
+        'answers',    COALESCE(q -> 'answers', '[]'::jsonb)
+      ));
+    END IF;
+  END LOOP;
+
+  UPDATE exam_candidates SET last_seen_at = now() WHERE id = c.id;
+
+  RETURN jsonb_build_object(
+    'examTitle',      s.title,
+    'candidateName',  c.full_name,
+    'instructions',   COALESCE(to_jsonb(ex.instructions), '[]'::jsonb),
+    'questions',      out_questions,
+    'savedAnswers',   c.answers,
+    'expiresAt',      c.expires_at,
+    'serverNow',      now(),
+    'paused',         s.paused_at IS NOT NULL,
+    'maxTabSwitches', s.max_tab_switches,
+    'tabSwitches',    c.tab_switches
+  );
+END;
+$$;
+
 -- ── Login, extended to hand back a certificate ─────────────────────────────
 --
 -- THIS SUPERSEDES the exam_candidate_login in exam_mode_v2.sql. Edit this copy,
@@ -594,8 +650,9 @@ $$;
 
 -- ── Grants ─────────────────────────────────────────────────────────────────
 
-GRANT EXECUTE ON FUNCTION verify_certificate(text)                    TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION verify_certificate(text)                     TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION exam_candidate_login(text, text, text, text) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION exam_get_paper(uuid)                         TO anon, authenticated;
 
 REVOKE EXECUTE ON FUNCTION _cert_next_serial(uuid)                              FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION _cert_issue(uuid, text)                              FROM PUBLIC, anon, authenticated;

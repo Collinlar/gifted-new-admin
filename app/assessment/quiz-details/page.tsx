@@ -7,6 +7,7 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import Input from "@/components/ui/Input";
+import ImageField from "@/components/ui/ImageField";
 import api from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Image as ImageIcon, Sparkles } from "lucide-react";
@@ -18,6 +19,7 @@ interface Question {
   explanation?: string;
   hint?: string;
   image?: string;
+  imageTitle?: string;
 }
 
 interface Quiz {
@@ -264,7 +266,7 @@ export default function QuizDetailsPage() {
                   <Input label="Program" value={String(metaForm.program || "")} onChange={(e) => setM("program", e.target.value)} />
                 </div>
                 <Input label="Tags (comma-separated)" value={String(metaForm.tags || "")} onChange={(e) => setM("tags", e.target.value)} placeholder="Math, Science..." />
-                <Input label="Image URL" value={String(metaForm.image || "")} onChange={(e) => setM("image", e.target.value)} placeholder="https://..." />
+                <ImageField label="Cover image" value={String(metaForm.image || "")} onChange={(url) => setM("image", url)} />
                 {/* Mode selector */}
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-ink">Content mode</label>
@@ -415,11 +417,14 @@ export default function QuizDetailsPage() {
                         <textarea value={qForm.question} onChange={(e) => setQForm({ ...qForm, question: e.target.value })} rows={2}
                           className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-muted">Image URL (optional)</label>
-                        <input value={qForm.image || ""} onChange={(e) => setQForm({ ...qForm, image: e.target.value })}
-                          placeholder="https://..." className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
-                      </div>
+                      <ImageField
+                        compact
+                        label="Image (optional)"
+                        value={qForm.image || ""}
+                        onChange={(url) => setQForm({ ...qForm, image: url })}
+                        title={qForm.imageTitle || ""}
+                        onTitleChange={(t) => setQForm({ ...qForm, imageTitle: t })}
+                      />
                       {qForm.answers.map((ans, ai) => (
                         <div key={ai} className="space-y-1">
                           <label className="text-xs font-medium text-muted">Option {ai + 1}</label>
@@ -473,11 +478,14 @@ export default function QuizDetailsPage() {
                       placeholder="Type the question..."
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted flex items-center gap-1"><ImageIcon size={11} /> Image URL (optional)</label>
-                    <input value={newQ.image || ""} onChange={(e) => setNewQ({ ...newQ, image: e.target.value })}
-                      placeholder="https://..." className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
-                  </div>
+                  <ImageField
+                    compact
+                    label="Image (optional)"
+                    value={newQ.image || ""}
+                    onChange={(url) => setNewQ({ ...newQ, image: url })}
+                    title={newQ.imageTitle || ""}
+                    onTitleChange={(t) => setNewQ({ ...newQ, imageTitle: t })}
+                  />
                   {newQ.answers.map((a, ai) => (
                     <div key={ai} className="space-y-1">
                       <label className="text-xs font-medium text-muted">Option {ai + 1}</label>

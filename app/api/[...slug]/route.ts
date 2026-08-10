@@ -1048,7 +1048,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       const { error: upErr } = await supabase.storage
         .from("gifted-files")
         .upload(path, buffer, { contentType: file.type, upsert: false });
-      if (upErr) return err(upErr.message);
+
+      if (upErr) {
+        // Uploads run with the service role, which bypasses storage RLS. So a
+        // failure here is almost always the bucket itself being absent rather
+        // than a permission rule. Say so, instead of leaving someone hunting
+        // through policies that were never the problem.
+        if (/bucket not found|does not exist/i.test(upErr.message)) {
+          return err(
+            "The storage bucket \"gifted-files\" does not exist yet. " +
+            "Run supabase/storage.sql, or create a public bucket with that name in the Supabase dashboard."
+          );
+        }
+        return err(upErr.message);
+      }
       const { data: urlData } = supabase.storage.from("gifted-files").getPublicUrl(path);
       return ok({ url: urlData.publicUrl, path });
     } catch (e) {

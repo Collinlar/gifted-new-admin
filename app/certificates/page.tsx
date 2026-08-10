@@ -272,7 +272,7 @@ function TemplateEditor({ template, onBack }: { template: Template; onBack: () =
   const pickBackground = async (file: File) => {
     setUploading(true); setError("");
     try { setBackground(await uploadFile(file)); setDirty(true); }
-    catch { setError("That image did not upload. Check your connection and try again."); }
+    catch (e) { setError(e instanceof Error ? e.message : "That image did not upload. Try again."); }
     finally { setUploading(false); }
   };
 
@@ -395,7 +395,7 @@ function TemplateEditor({ template, onBack }: { template: Template; onBack: () =
                     const url = await uploadFile(file);
                     const f: Field = { id: uid(), type: "image", x: 50, y: 70, width: 15, url };
                     setFields((prev) => [...prev, f]); setSelected(f.id); setDirty(true);
-                  } catch { setError("That image did not upload. Try again."); }
+                  } catch (err) { setError(err instanceof Error ? err.message : "That image did not upload. Try again."); }
                   finally { setUploading(false); }
                 }} />
             </Card>
