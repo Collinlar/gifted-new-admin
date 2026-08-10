@@ -50,7 +50,7 @@ export default function AddQuizPage() {
 
   // Meta fields
   const [title, setTitle] = useState("");
-  const [examMode, setExamMode] = useState("quiz");
+  const [examMode, setExamMode] = useState("exam");
   const [contest, setContest] = useState(false);
   const [instructor, setInstructor] = useState("");
   const [level, setLevel] = useState("");
@@ -183,11 +183,12 @@ export default function AddQuizPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-ink">Exam mode</label>
+                  {/* These three are the only values exams.mode accepts. */}
                   <select value={examMode} onChange={(e) => setExamMode(e.target.value)}
                     className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 focus:border-primary">
-                    <option value="quiz">Quiz</option>
                     <option value="exam">Exam</option>
                     <option value="practice">Practice</option>
+                    <option value="both">Both</option>
                   </select>
                 </div>
                 <Input label="Instructor" placeholder="Instructor name" value={instructor} onChange={(e) => setInstructor(e.target.value)} />

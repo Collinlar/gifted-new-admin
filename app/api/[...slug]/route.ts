@@ -54,12 +54,18 @@ function rows(data: Record<string, unknown>[] | null) {
 // one spelling of each, so the time limit, publish flag, review flag and
 // feedback flag were silently dropped on every quiz created through the form.
 // Accept both spellings.
+// exams.mode carries a CHECK constraint from the practice mode migration:
+//   CHECK (mode IN ('exam', 'practice', 'both')) DEFAULT 'exam'
+// Anything else is rejected outright, taking the whole insert with it.
+const EXAM_MODES = ["exam", "practice", "both"];
+
 function examRow(body: Record<string, unknown>) {
   const pick = (...keys: string[]) => {
     for (const k of keys) if (body[k] !== undefined && body[k] !== "") return body[k];
     return undefined;
   };
-  return {
+
+  const row: Record<string, unknown> = {
     title:               body.title,
     description:         body.description,
     grade:               body.grade || [],
@@ -68,7 +74,6 @@ function examRow(body: Record<string, unknown>) {
     image:               body.image,
     questions:           body.questions || [],
     instructions:        body.instructions || [],
-    mode:                pick("mode", "examMode") ?? "quiz",
     featured:            body.featured || false,
     publish:             pick("publish", "published") || false,
     contest:             body.contest || false,
@@ -83,6 +88,14 @@ function examRow(body: Record<string, unknown>) {
     program:             body.program,
     tags:                body.tags || [],
   };
+
+  // Only set mode when the caller gave one the constraint accepts. Otherwise
+  // omit the column entirely and let the database default of 'exam' stand,
+  // rather than inventing a value and having the insert rejected.
+  const mode = pick("mode", "examMode");
+  if (typeof mode === "string" && EXAM_MODES.includes(mode)) row.mode = mode;
+
+  return row;
 }
 
 // ── Authentication ─────────────────────────────────────────────────────────
@@ -1801,7 +1814,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.displayScores      !== undefined) patch.display_scores      = body.displayScores;
     if (body.showFeedbackForm   !== undefined) patch.show_feedback_form  = body.showFeedbackForm;
     if (body.shuffleQuestions   !== undefined) patch.shuffle_questions   = body.shuffleQuestions;
-    if (body.mode               !== undefined) patch.mode                = body.mode;
+    // Same CHECK constraint as on insert: silently ignore a value the column
+    // would reject rather than failing the whole update.
+    if (typeof body.mode === "string" && EXAM_MODES.includes(body.mode)) patch.mode = body.mode;
     if (body.hintsEnabled       !== undefined) patch.hints_enabled       = body.hintsEnabled;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("exams").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
