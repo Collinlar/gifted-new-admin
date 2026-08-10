@@ -79,7 +79,9 @@ export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
     const rawOptions = LETTERS.map((L) => str(row[`option_${L.toLowerCase()}`]));
     const correctLetter = str(row.correct).toUpperCase().slice(0, 1);
     const explanation = str(row.explanation);
-    const image = str(row.image_url);
+    // Files in the wild head this column "Image", "image url" or "image_url",
+    // and silently dropping the pictures is worse than accepting all three.
+    const image = str(row.image_url ?? row.image ?? row.imageurl ?? row.image_link);
 
     const errors: string[] = [];
     const warnings: string[] = [];

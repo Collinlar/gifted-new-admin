@@ -38,7 +38,7 @@ export default function BulkUploadPage() {
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError]     = useState("");
-  const [done, setDone]       = useState<{ imported: number; total: number } | null>(null);
+  const [done, setDone]       = useState<{ imported: number; total: number; dropped?: string[] } | null>(null);
 
   useEffect(() => {
     api.get("/announcement-content-options")
@@ -106,10 +106,13 @@ export default function BulkUploadPage() {
         duration: timeLimit ? Number(timeLimit) : undefined,
         questions,
       });
-      setDone({ imported: res.data.imported, total: res.data.total });
+      setDone({ imported: res.data.imported, total: res.data.total, dropped: res.data.dropped || [] });
       setRows(null);
-    } catch {
-      setError("The import did not go through. Try again in a moment.");
+    } catch (e) {
+      // Show what the server actually said. A generic "try again" hides real
+      // faults behind an instruction to repeat something that cannot work.
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || "The import did not go through. Try again in a moment.");
     } finally {
       setImporting(false);
     }
@@ -136,6 +139,13 @@ export default function BulkUploadPage() {
                   </p>
                   <p className="text-sm text-muted mt-1">This assessment now holds {done.total} questions.</p>
                 </div>
+                {done.dropped && done.dropped.length > 0 && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-md mx-auto">
+                    Your questions imported, but this database has no{" "}
+                    {done.dropped.join(" or ")} column, so {done.dropped.length === 1 ? "that setting was" : "those settings were"}{" "}
+                    left out. Run the exam mode migrations to add {done.dropped.length === 1 ? "it" : "them"}.
+                  </p>
+                )}
                 <div className="flex gap-3 justify-center pt-2">
                   <Button onClick={() => router.push("/assessment")}>See all assessments</Button>
                   <Button variant="secondary" onClick={() => { setDone(null); setFileName(""); }}>

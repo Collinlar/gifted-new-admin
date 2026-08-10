@@ -113,6 +113,34 @@ function actorFrom(req: NextRequest): string {
   return verifyToken(bearerFrom(req))?.email || "unknown";
 }
 
+// Columns added to `exams` after the original MongoDB import. An install that
+// has not run every migration will not have them, and Postgres then rejects the
+// whole insert with 42703 (undefined_column) rather than ignoring the extra
+// field. Losing a 40 question import over one absent column is a bad trade, so
+// drop the offending column and try again, then report what was skipped.
+const OPTIONAL_EXAM_COLUMNS = ["instructions", "mode"];
+
+async function insertExamRow(row: Record<string, unknown>) {
+  const attempt: Record<string, unknown> = { ...row };
+  const dropped: string[] = [];
+
+  for (let i = 0; i <= OPTIONAL_EXAM_COLUMNS.length; i++) {
+    const { data, error } = await supabase.from("exams").insert(attempt).select().single();
+    if (!error) return { data, dropped, error: null as null | { message: string } };
+    if (error.code !== "42703") return { data: null, dropped, error };
+
+    const missing = OPTIONAL_EXAM_COLUMNS.find(
+      (c) => c in attempt && error.message.includes(c)
+    );
+    if (!missing) return { data: null, dropped, error };
+
+    delete attempt[missing];
+    dropped.push(missing);
+  }
+
+  return { data: null, dropped, error: { message: "Could not save the assessment." } };
+}
+
 // ── Router ─────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
@@ -1331,9 +1359,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   // POST /add-exam
   if (p0 === "add-exam") {
-    const { data, error } = await supabase.from("exams").insert(examRow(body)).select().single();
+    const { data, error } = await insertExamRow(examRow(body));
     if (error) return err(error.message);
-    return ok({ exam: cam(data) });
+    return ok({ exam: cam(data as Record<string, unknown>) });
   }
 
   // POST /bulk-add-exam — create an exam from a parsed spreadsheet, or append
@@ -1357,9 +1385,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     }
 
     const row = examRow({ ...body, numberOfQuestions: incoming.length });
-    const { data, error } = await supabase.from("exams").insert(row).select().single();
+    const { data, dropped, error } = await insertExamRow(row);
     if (error) return err(error.message);
-    return ok({ exam: cam(data), imported: incoming.length, total: incoming.length });
+    return ok({
+      exam: cam(data as Record<string, unknown>),
+      imported: incoming.length,
+      total: incoming.length,
+      dropped,
+    });
   }
 
   // POST /add-flashcard
