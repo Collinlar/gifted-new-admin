@@ -14,7 +14,7 @@ import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
   Printer, ChevronRight, RefreshCw, Play, Square, Link2, Pause,
   ShieldCheck, FileText, History, Send, Lock, Unlock, X, AlertTriangle,
-  CheckCircle2, XCircle, Award, Trash2,
+  CheckCircle2, XCircle, Award, Trash2, Settings,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -239,6 +239,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [panelFor, setPanelFor] = useState<Candidate | null>(null);
   // Bumped after a certificate action so the tab remounts and refetches
   const [certVersion, setCertVersion] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Pending action awaiting a reason
   const [ask, setAsk] = useState<null | {
@@ -376,6 +377,9 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft size={14} /> All sittings</Button>
             <div className="flex items-center gap-2 flex-wrap">
+              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
+                <Settings size={13} /> Settings
+              </Button>
               {session?.status !== "live" && !paused && (
                 <Button size="sm" onClick={() => {
                   // Login gates on the window separately from the status, so a
@@ -637,6 +641,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           />
         )}
 
+        {settingsOpen && session && (
+          <SettingsPanel session={session} onClose={() => setSettingsOpen(false)} onSaved={load} />
+        )}
+
         {ask && (
           <ReasonModal title={ask.title} required={ask.required} note={ask.note}
             onCancel={() => setAsk(null)} onConfirm={run} />
@@ -890,6 +898,124 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-xs text-muted shrink-0">{label}</span>
       <span className="text-xs text-ink text-right">{value}</span>
     </div>
+  );
+}
+
+// ── Sitting settings ───────────────────────────────────────────────────────
+//
+// Duration, name, code and window could all be set when a sitting was created
+// and never changed afterwards, even though the API accepted updates the whole
+// time. This is the missing editor.
+//
+// Duration only governs candidates who have not started: everyone already
+// writing has a finish time stamped at their own first login, so changing it
+// mid-sitting cannot move their clock. To adjust someone already writing, use
+// "Add time for everyone" or the per candidate controls.
+
+function SettingsPanel({ session, onClose, onSaved }: {
+  session: Session; onClose: () => void; onSaved: () => void;
+}) {
+  const toLocal = (iso?: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const [title, setTitle]       = useState(session.title);
+  const [duration, setDuration] = useState(String(session.durationMinutes ?? 60));
+  const [startsAt, setStartsAt] = useState(toLocal(session.startsAt));
+  const [endsAt, setEndsAt]     = useState(toLocal(session.endsAt));
+  const [shuffle, setShuffle]   = useState(!!session.shuffleQuestions);
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState("");
+
+  const writingNow = (session.counts?.in_progress ?? 0) > 0;
+
+  const save = async () => {
+    setError("");
+    if (!title.trim()) return setError("Give this sitting a name.");
+    const mins = Number(duration);
+    if (!mins || mins < 1) return setError("Duration must be at least 1 minute.");
+
+    setSaving(true);
+    try {
+      await api.put(`/update-exam-session/${session.id}`, {
+        title,
+        durationMinutes: mins,
+        startsAt: startsAt ? new Date(startsAt).toISOString() : null,
+        endsAt:   endsAt   ? new Date(endsAt).toISOString()   : null,
+        shuffleQuestions: shuffle,
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(serverMessage(e, "Could not save those settings. Try again."));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <SlidePanel open onClose={onClose} title="Sitting settings" width="lg">
+      <div className="space-y-5">
+        <Input label="Sitting name" value={title} onChange={(e) => setTitle(e.target.value)} />
+
+        <div>
+          <Input label="Duration (minutes)" type="number" value={duration}
+            onChange={(e) => setDuration(e.target.value)} />
+          {writingNow && (
+            <div className="flex items-start gap-2 mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+              <AlertTriangle size={13} className="text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-800">
+                {session.counts?.in_progress} candidate{session.counts?.in_progress === 1 ? " is" : "s are"} already
+                writing. Their finish times were set when they signed in, so this change only applies
+                to people who have not started. Use &ldquo;Add time for everyone&rdquo; to extend those already going.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-ink">Opens</label>
+            <input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)}
+              className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-ink">Closes</label>
+            <input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)}
+              className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary" />
+          </div>
+        </div>
+        <p className="text-xs text-muted -mt-2">
+          Leave both blank to keep the sitting open until you close it by hand.
+        </p>
+
+        <div className="pt-3 border-t border-border">
+          <Toggle label="Shuffle the question order per candidate" value={shuffle} onChange={setShuffle} />
+          <p className="text-xs text-muted mt-1.5">
+            Only affects candidates who have not started. A paper already issued keeps its order.
+          </p>
+        </div>
+
+        <div className="space-y-1 pt-3 border-t border-border">
+          <label className="text-sm font-medium text-ink">Session code</label>
+          <code className="block text-sm font-mono bg-surface border border-border rounded-lg px-3 py-2.5 text-muted">
+            {session.sessionCode}
+          </code>
+          <p className="text-xs text-muted pt-1">
+            The code is fixed once candidates have their slips, since changing it would break every
+            link already handed out.
+          </p>
+        </div>
+
+        {error && <p className="text-sm text-danger bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+
+        <div className="flex gap-3 pt-2 border-t border-border">
+          <Button onClick={save} disabled={saving}>{saving ? "Saving settings..." : "Save settings"}</Button>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </SlidePanel>
   );
 }
 
