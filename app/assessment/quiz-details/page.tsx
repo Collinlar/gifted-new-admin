@@ -35,6 +35,7 @@ interface Quiz {
   program?: string;
   tags?: string[];
   image?: string;
+  instructions?: string[];
   contest?: boolean;
   featured?: boolean;
   publish?: boolean;
@@ -101,6 +102,8 @@ export default function QuizDetailsPage() {
       program:          quiz.program || "",
       tags:             arr(quiz.tags).join(", "),
       image:            quiz.image || "",
+      // One per line in the editor, stored as an array
+      instructions:     arr(quiz.instructions).join("\n"),
       mode:             quiz.mode || "exam",
       hintsEnabled:     quiz.hintsEnabled !== false,
       contest:          !!quiz.contest,
@@ -132,6 +135,8 @@ export default function QuizDetailsPage() {
         program:          metaForm.program || null,
         tags:             split(metaForm.tags),
         image:            metaForm.image || null,
+        instructions:     String(metaForm.instructions || "")
+                            .split("\n").map((s) => s.trim()).filter(Boolean),
         mode:             metaForm.mode || "exam",
         hintsEnabled:     metaForm.hintsEnabled,
         contest:          metaForm.contest,
@@ -249,6 +254,26 @@ export default function QuizDetailsPage() {
                   <textarea value={String(metaForm.description || "")} onChange={(e) => setM("description", e.target.value)}
                     rows={3} className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                 </div>
+
+                {/* Instructions the student sees on the overview page before
+                    starting. One per line. Leave empty and they get a generic
+                    set of house rules instead. */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-ink">
+                    Instructions <span className="text-muted font-normal text-xs">(one per line)</span>
+                  </label>
+                  <textarea
+                    value={String(metaForm.instructions || "")}
+                    onChange={(e) => setM("instructions", e.target.value)}
+                    rows={5}
+                    placeholder={"Answer all 30 questions.\nCalculators are not allowed.\nYou cannot return to a previous question."}
+                    className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-y"
+                  />
+                  <p className="text-xs text-muted">
+                    Shown as a numbered list before the student starts. If you leave this blank,
+                    a generic set of instructions is shown instead.
+                  </p>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Input label="Time (minutes)" type="number" value={String(metaForm.time || "")} onChange={(e) => setM("time", e.target.value)} />
                   <Input label="Number of questions" type="number" value={String(metaForm.numberOfQuestions || "")} onChange={(e) => setM("numberOfQuestions", e.target.value)} />
@@ -335,6 +360,26 @@ export default function QuizDetailsPage() {
                     </div>
                   ))}
                 </dl>
+
+                {/* What students actually see before starting, so you can check
+                    it without opening the editor. */}
+                <div>
+                  <p className="text-xs text-muted uppercase tracking-wide font-medium mb-2">
+                    Instructions shown to students
+                  </p>
+                  {arr(quiz.instructions).length > 0 ? (
+                    <ol className="space-y-1.5 list-decimal list-inside">
+                      {arr(quiz.instructions).map((line: string, i: number) => (
+                        <li key={i} className="text-sm text-ink">{line}</li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-sm text-muted">
+                      None set, so students see a generic set of house rules. Tap Edit to write
+                      instructions for this assessment.
+                    </p>
+                  )}
+                </div>
 
                 {quiz.image && (
                   <div>

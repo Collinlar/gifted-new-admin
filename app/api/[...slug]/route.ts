@@ -1822,6 +1822,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.publish            !== undefined) patch.publish             = body.publish;
     if (body.contest            !== undefined) patch.contest             = body.contest;
     if (body.questions          !== undefined) patch.questions           = body.questions;
+    // Instructions could be written at creation but never edited afterwards,
+    // because this patch never carried them.
+    if (body.instructions       !== undefined) patch.instructions        = body.instructions;
     if (body.attemptsAllowed    !== undefined) patch.attempts_allowed    = body.attemptsAllowed;
     if (body.allowQuizReview    !== undefined) patch.allow_quiz_review   = body.allowQuizReview;
     if (body.displayScores      !== undefined) patch.display_scores      = body.displayScores;
