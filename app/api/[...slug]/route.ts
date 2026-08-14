@@ -1218,6 +1218,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       status:             body.status || "draft",
       confirmation_message: body.confirmationMessage || null,
       reference_prefix:   body.referencePrefix || null,
+      slug:               body.slug || null,
+      cover_image_url:    body.coverImageUrl || null,
+      accent_color:       body.accentColor || "#003366",
+      intro_heading:      body.introHeading || null,
     }).select().single();
     if (error) return err(error.message);
     return ok({ form: cam(data) });
@@ -1861,6 +1865,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.status             !== undefined) patch.status               = body.status;
     if (body.confirmationMessage!== undefined) patch.confirmation_message = body.confirmationMessage;
     if (body.referencePrefix    !== undefined) patch.reference_prefix     = body.referencePrefix;
+    if (body.slug               !== undefined) patch.slug                 = body.slug || null;
+    if (body.coverImageUrl      !== undefined) patch.cover_image_url      = body.coverImageUrl || null;
+    if (body.accentColor        !== undefined) patch.accent_color         = body.accentColor;
+    if (body.introHeading       !== undefined) patch.intro_heading        = body.introHeading;
 
     const { data, error } = await supabase
       .from("registration_forms").update(patch).eq("id", p1).select().single();

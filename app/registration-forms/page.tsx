@@ -7,6 +7,7 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Spinner from "@/components/ui/Spinner";
+import ImageField from "@/components/ui/ImageField";
 import api from "@/lib/api";
 import {
   STANDARD_FIELDS, FIELD_GROUPS, TYPE_LABELS, GRADES,
@@ -15,7 +16,7 @@ import {
 } from "@/lib/registrationFields";
 import {
   Plus, ArrowLeft, Trash2, ClipboardList, Save, Copy, ChevronUp, ChevronDown,
-  Sparkles, Users, Eye,
+  Users, Eye, Link2, Check, Settings,
 } from "lucide-react";
 
 interface RegForm {
@@ -26,6 +27,9 @@ interface RegForm {
   capacity?: number | null; waitlistWhenFull: boolean;
   requiresPayment: boolean; feeAmount?: number | null; feeCurrency: string;
   status: "draft" | "open" | "closed";
+  slug?: string | null;
+  coverImageUrl?: string | null;
+  accentColor?: string; introHeading?: string | null;
   confirmationMessage?: string | null; referencePrefix?: string | null;
   counts?: Record<string, number>;
 }
@@ -164,7 +168,7 @@ export default function RegistrationFormsPage() {
 function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void }) {
   const [form, setForm] = useState<RegForm | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"questions" | "settings" | "submissions">("questions");
+  const [tab, setTab] = useState<"questions" | "preview" | "settings" | "submissions">("questions");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
@@ -249,9 +253,12 @@ function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void })
 
           {error && <p className="text-sm text-danger bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
 
+          <ShareLink form={form} />
+
           <div className="flex items-center gap-1 border-b border-border">
             {([["questions", "Questions", ClipboardList],
-               ["settings", "Settings", Sparkles],
+               ["preview", "Preview", Eye],
+               ["settings", "Settings", Settings],
                ["submissions", "Submissions", Users]] as const).map(([v, label, Icon]) => (
               <button key={v} onClick={() => setTab(v)}
                 className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
@@ -264,8 +271,7 @@ function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void })
 
           {tab === "questions" && (
             <>
-              <div className="flex items-start gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
-                <Sparkles size={15} className="text-emerald-600 shrink-0 mt-0.5" />
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
                 <p className="text-sm text-emerald-800">
                   <strong>{auto} of {fields.length}</strong> questions are answered for the student before
                   they see this form, from their profile or from something they have told us before.
@@ -302,6 +308,7 @@ function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void })
             </>
           )}
 
+          {tab === "preview" && <PreviewTab form={form} />}
           {tab === "settings" && <SettingsTab form={form} set={set} />}
           {tab === "submissions" && <SubmissionsTab formId={formId} form={form} />}
         </div>
@@ -482,6 +489,175 @@ function FieldPicker({ usedKeys, onClose, onPickStandard, onPickCustom }: {
   );
 }
 
+// ── The link you hand out ──────────────────────────────────────────────────
+//
+// A registration link goes into a WhatsApp broadcast or gets read down a phone,
+// so it is built from the form's slug rather than its uuid.
+
+function ShareLink({ form }: { form: RegForm }) {
+  const [siteUrl, setSiteUrl] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => { setSiteUrl(localStorage.getItem("giftedSiteUrl") || ""); }, []);
+
+  const link = `${siteUrl.replace(/\/$/, "") || "https://your-site"}/register/${form.slug || form.id}`;
+
+  return (
+    <Card title="The link you send out">
+      <div className="space-y-3">
+        {form.status !== "open" && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            This form is {form.status === "draft" ? "still a draft" : "closed"}, so anyone opening
+            the link is told so rather than seeing the questions. Set it to Open when you are ready.
+          </p>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link2 size={14} className="text-muted shrink-0" />
+          <code className="text-sm font-mono bg-surface border border-border rounded px-2 py-1.5 flex-1 min-w-0 truncate">
+            {link}
+          </code>
+          <Button size="sm" variant="secondary" onClick={() => {
+            navigator.clipboard.writeText(link);
+            setCopied(true); setTimeout(() => setCopied(false), 1800);
+          }}>
+            {copied ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy link</>}
+          </Button>
+        </div>
+
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <Input label="Your student site address" placeholder="https://giftededu.tech"
+              value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} />
+          </div>
+          <Button size="sm" variant="secondary"
+            onClick={() => localStorage.setItem("giftedSiteUrl", siteUrl)}>
+            Save address
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── Preview ────────────────────────────────────────────────────────────────
+//
+// Rendered from the same field definitions the student page uses, with sample
+// answers standing in for the prefill, so the length and the fit are real.
+
+const SAMPLE: Record<string, string> = {
+  first_name: "Ama", last_name: "Mensah", email: "ama.mensah@school.edu.gh",
+  mobile_number: "+233 20 000 0000", school_name: "Achimota School", grade: "SHS 2",
+  parent_phone: "+233 24 111 2222", region: "Greater Accra", t_shirt_size: "M",
+};
+
+function PreviewTab({ form }: { form: RegForm }) {
+  const accent = form.accentColor || "#003366";
+  const fields = form.fields || [];
+  const auto = fields.filter((f) => f.source || f.remember).length;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted">
+        How this looks to a student. Answers shown in green are ones they never have to type.
+      </p>
+
+      <div className="bg-[#F0F4F8] rounded-2xl p-5 sm:p-8">
+        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          {form.coverImageUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={form.coverImageUrl} alt="" className="w-full h-40 object-cover" />
+          )}
+          <div className="h-1.5" style={{ backgroundColor: accent }} />
+
+          <div className="px-6 pt-6 pb-5 border-b border-gray-100">
+            {form.programTitle && (
+              <p className="text-xs uppercase tracking-wide mb-1" style={{ color: accent }}>{form.programTitle}</p>
+            )}
+            <h1 className="text-2xl font-bold text-[#003366] leading-tight">
+              {form.introHeading || form.title}
+            </h1>
+            {form.description && (
+              <p className="text-[15px] leading-relaxed mt-3 whitespace-pre-line text-gray-700">{form.description}</p>
+            )}
+            <div className="flex flex-wrap gap-4 mt-4 text-xs text-[#336699]">
+              {form.closesAt && <span>Closes {new Date(form.closesAt).toLocaleDateString()}</span>}
+              {form.requiresPayment && <span>{form.feeCurrency} {form.feeAmount}</span>}
+            </div>
+          </div>
+
+          {auto > 0 && (
+            <div className="px-6 py-3 bg-emerald-50 border-b border-emerald-100">
+              <p className="text-sm text-emerald-800">
+                We have filled in {auto} answer{auto === 1 ? "" : "s"} from what you have already
+                told us. Check they are right and change anything that has moved on.
+              </p>
+            </div>
+          )}
+
+          <div className="px-6 py-6 grid sm:grid-cols-2 gap-x-4 gap-y-5">
+            {fields.map((f) => {
+              if (f.type === "section") {
+                return (
+                  <div key={f.id} className="sm:col-span-2 pt-2">
+                    <h2 className="text-sm font-bold uppercase tracking-wide text-[#003366]">{f.label}</h2>
+                    <div className="h-px bg-gray-100 mt-2" />
+                  </div>
+                );
+              }
+              if (f.type === "info") {
+                return <p key={f.id} className="sm:col-span-2 text-sm text-gray-600 leading-relaxed">{f.label}</p>;
+              }
+
+              const filled = SAMPLE[f.key] || (f.source ? "From their profile" : "");
+              const why = f.source ? "From your profile" : f.remember ? "You told us this before" : null;
+
+              return (
+                <div key={f.id} className={f.half ? "" : "sm:col-span-2"}>
+                  <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                    <label className="text-sm font-medium text-[#003366]">
+                      {f.label}{f.required && <span className="text-red-500"> *</span>}
+                    </label>
+                    {why && <span className="text-[11px] text-emerald-600 shrink-0">{why}</span>}
+                  </div>
+                  {f.type === "checkbox" ? (
+                    <div className="flex items-start gap-2.5">
+                      <span className="mt-0.5 w-4 h-4 rounded border border-gray-300 shrink-0" />
+                      <span className="text-sm text-gray-700">{f.label}</span>
+                    </div>
+                  ) : f.type === "textarea" ? (
+                    <div className="w-full border border-[#D8E1EA] rounded-xl px-3.5 py-3 text-[15px] text-gray-400 h-20">
+                      {f.placeholder || ""}
+                    </div>
+                  ) : f.type === "multiselect" ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {(f.options || ["Option"]).slice(0, 4).map((o) => (
+                        <span key={o} className="px-3 py-1.5 rounded-lg text-sm border border-[#D8E1EA] text-[#336699]">{o}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={`w-full border border-[#D8E1EA] rounded-xl px-3.5 py-3 text-[15px] ${filled ? "text-gray-900" : "text-gray-400"}`}>
+                      {filled || f.placeholder || (f.type === "select" ? "Choose one..." : "")}
+                    </div>
+                  )}
+                  {f.help && <p className="text-xs mt-1.5 text-[#336699]">{f.help}</p>}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="px-6 pb-6">
+            <span className="inline-block px-7 py-3 rounded-xl text-white font-semibold"
+              style={{ backgroundColor: accent }}>
+              Complete registration
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Settings ───────────────────────────────────────────────────────────────
 
 function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) => void }) {
@@ -510,6 +686,49 @@ function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) 
           </div>
           <p className="text-xs text-muted -mt-2">
             References look like GHMATH-2026-0042 and are what a student quotes when they contact you.
+          </p>
+
+          <div className="space-y-1 pt-3 border-t border-border">
+            <label className="text-sm font-medium text-ink">Link address</label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted font-mono shrink-0">/register/</span>
+              <input value={form.slug || ""}
+                onChange={(e) => set({ slug: e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "") })}
+                placeholder="KMAC26"
+                className="flex-1 border border-border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-primary" />
+            </div>
+            <p className="text-xs text-muted pt-1">
+              This is what people type or tap. Keep it short enough to read down a phone. Changing
+              it breaks any link already shared.
+            </p>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="How it looks">
+        <div className="space-y-4">
+          <ImageField label="Cover image" value={form.coverImageUrl || ""}
+            onChange={(url) => set({ coverImageUrl: url })} />
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Input label="Heading" value={form.introHeading || ""}
+              onChange={(e) => set({ introHeading: e.target.value })}
+              placeholder="Leave blank to use the title" />
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-ink">Accent colour</label>
+              <div className="flex items-center gap-2">
+                <input type="color" value={form.accentColor || "#003366"}
+                  onChange={(e) => set({ accentColor: e.target.value })}
+                  className="h-[42px] w-14 border border-border rounded-lg px-1 cursor-pointer" />
+                <input value={form.accentColor || "#003366"}
+                  onChange={(e) => set({ accentColor: e.target.value })}
+                  className="flex-1 border border-border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-primary" />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-muted">
+            The accent runs along the top of the form and colours the submit button, so each
+            programme reads as its own thing. Check the Preview tab.
           </p>
         </div>
       </Card>
