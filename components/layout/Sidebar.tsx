@@ -58,7 +58,8 @@ const NAV: NavGroup[] = [
     label: "Engagement",
     items: [
       { href: "/announcements", label: "Announcements", icon: Megaphone },
-      { href: "/registrations", label: "Registrations", icon: ClipboardCheck },
+      { href: "/registration-forms", label: "Registrations", icon: ClipboardCheck },
+      { href: "/registrations", label: "Registrations (old)", icon: ClipboardCheck },
       { href: "/leaderboard", label: "Leaderboard", icon: Medal },
       { href: "/badges", label: "Badges", icon: Award },
     ],

@@ -486,6 +486,63 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     });
   }
 
+  // GET /registration-forms
+  if (p0 === "registration-forms") {
+    const { data: forms } = await supabase
+      .from("registration_forms").select("*").order("created_at", { ascending: false });
+
+    const ids = (forms || []).map((f: { id: string }) => f.id);
+    const { data: regs } = ids.length
+      ? await supabase.from("registrations").select("form_id, status").in("form_id", ids)
+      : { data: [] };
+
+    const roll: Record<string, Record<string, number>> = {};
+    for (const r of (regs || []) as { form_id: string; status: string }[]) {
+      roll[r.form_id] ??= { total: 0 };
+      roll[r.form_id].total++;
+      roll[r.form_id][r.status] = (roll[r.form_id][r.status] || 0) + 1;
+    }
+
+    return ok({
+      forms: (forms || []).map((f: Record<string, unknown>) => ({
+        ...cam(f),
+        counts: roll[f.id as string] || { total: 0 },
+      })),
+    });
+  }
+
+  // GET /registration-form/:id
+  if (p0 === "registration-form" && p1) {
+    const { data, error } = await supabase
+      .from("registration_forms").select("*").eq("id", p1).single();
+    if (error) return err(error.message);
+    return ok({ form: cam(data) });
+  }
+
+  // GET /registration-submissions/:formId — the review queue, with each
+  // submitter's profile attached so the list is readable without a join per row
+  if (p0 === "registration-submissions" && p1) {
+    const { data: regs } = await supabase
+      .from("registrations").select("*").eq("form_id", p1)
+      .order("submitted_at", { ascending: false, nullsFirst: false });
+
+    const userIds = [...new Set((regs || []).map((r: { user_id: string }) => r.user_id))];
+    const { data: people } = userIds.length
+      ? await supabase.from("users")
+          .select("id, first_name, last_name, email, mobile_number, school_name, grade")
+          .in("id", userIds)
+      : { data: [] };
+
+    const byId = Object.fromEntries((people || []).map((u: { id: string }) => [u.id, u]));
+
+    return ok({
+      submissions: (regs || []).map((r: Record<string, unknown>) => ({
+        ...cam(r),
+        user: byId[r.user_id as string] ? cam(byId[r.user_id as string]) : null,
+      })),
+    });
+  }
+
   // GET /certificate-templates
   if (p0 === "certificate-templates") {
     const { data } = await supabase
@@ -1142,6 +1199,109 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok({ announcement: cam(data) });
   }
 
+  // POST /add-registration-form
+  if (p0 === "add-registration-form") {
+    const { data, error } = await supabase.from("registration_forms").insert({
+      title:              body.title || "Untitled registration",
+      description:        body.description || null,
+      program_type:       body.programType || "competition",
+      program_id:         body.programId || null,
+      program_title:      body.programTitle || null,
+      fields:             body.fields || [],
+      opens_at:           body.opensAt || null,
+      closes_at:          body.closesAt || null,
+      capacity:           body.capacity ?? null,
+      waitlist_when_full: body.waitlistWhenFull ?? true,
+      requires_payment:   body.requiresPayment || false,
+      fee_amount:         body.feeAmount ?? null,
+      fee_currency:       body.feeCurrency || "GHS",
+      status:             body.status || "draft",
+      confirmation_message: body.confirmationMessage || null,
+      reference_prefix:   body.referencePrefix || null,
+    }).select().single();
+    if (error) return err(error.message);
+    return ok({ form: cam(data) });
+  }
+
+  // POST /registration-decision — accept, waitlist or reject, one or many
+  if (p0 === "registration-decision") {
+    const ids: string[] = Array.isArray(body.ids) ? body.ids : [];
+    const allowed = ["under_review", "accepted", "waitlisted", "rejected", "withdrawn"];
+    if (!ids.length) return err("No registrations selected.");
+    if (!allowed.includes(body.status)) return err("That is not a valid decision.");
+
+    const { error } = await supabase.from("registrations").update({
+      status:        body.status,
+      decided_at:    new Date().toISOString(),
+      decided_by:    actorFrom(req),
+      decision_note: body.note || null,
+      updated_at:    new Date().toISOString(),
+    }).in("id", ids);
+
+    if (error) return err(error.message);
+    return ok({ updated: ids.length });
+  }
+
+  // POST /import-registrations — bring a Google Form export across.
+  //
+  // Rows are matched to accounts by email. Anything unmatched is reported
+  // rather than dropped, so a spreadsheet is never partially imported without
+  // anyone knowing which lines went missing.
+  if (p0 === "import-registrations") {
+    const rows: Record<string, unknown>[] = Array.isArray(body.rows) ? body.rows : [];
+    if (!body.formId) return err("No form given.");
+    if (!rows.length) return err("Nothing to import.");
+
+    const emails = rows.map((r) => String(r.__email || "").trim().toLowerCase()).filter(Boolean);
+    const { data: people } = emails.length
+      ? await supabase.from("users").select("id, email").in("email", emails)
+      : { data: [] };
+
+    const idByEmail = Object.fromEntries(
+      (people || []).map((u: { id: string; email: string }) => [String(u.email).toLowerCase(), u.id])
+    );
+
+    const { data: form } = await supabase
+      .from("registration_forms").select("fields").eq("id", body.formId).single();
+
+    const toInsert: Record<string, unknown>[] = [];
+    const unmatched: string[] = [];
+
+    for (const r of rows) {
+      const email = String(r.__email || "").trim().toLowerCase();
+      const uid = idByEmail[email];
+      if (!uid) { unmatched.push(email || "(no email)"); continue; }
+
+      const answers = { ...r };
+      delete answers.__email;
+
+      toInsert.push({
+        form_id: body.formId,
+        user_id: uid,
+        answers,
+        form_snapshot: form?.fields || [],
+        status: body.status || "submitted",
+        payment_status: "not_required",
+        submitted_at: new Date().toISOString(),
+        imported_from: body.source || "Google Forms",
+      });
+    }
+
+    let imported = 0;
+    if (toInsert.length) {
+      // Ignore anyone who already has a registration on this form rather than
+      // failing the whole batch on the unique constraint
+      const { data, error } = await supabase
+        .from("registrations")
+        .upsert(toInsert, { onConflict: "form_id,user_id", ignoreDuplicates: true })
+        .select("id");
+      if (error) return err(error.message);
+      imported = (data || []).length;
+    }
+
+    return ok({ imported, skipped: toInsert.length - imported, unmatched });
+  }
+
   // POST /preview-certificate — render whatever is on the editor canvas right
   // now against sample data, so a design can be checked before anyone earns one
   if (p0 === "preview-certificate") {
@@ -1682,6 +1842,32 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ track: cam(data) });
   }
 
+  // PUT /update-registration-form/:id
+  if (p0 === "update-registration-form" && p1) {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (body.title              !== undefined) patch.title                = body.title;
+    if (body.description        !== undefined) patch.description          = body.description;
+    if (body.programType        !== undefined) patch.program_type         = body.programType;
+    if (body.programId          !== undefined) patch.program_id           = body.programId || null;
+    if (body.programTitle       !== undefined) patch.program_title        = body.programTitle;
+    if (body.fields             !== undefined) patch.fields               = body.fields;
+    if (body.opensAt            !== undefined) patch.opens_at             = body.opensAt || null;
+    if (body.closesAt           !== undefined) patch.closes_at            = body.closesAt || null;
+    if (body.capacity           !== undefined) patch.capacity             = body.capacity ?? null;
+    if (body.waitlistWhenFull   !== undefined) patch.waitlist_when_full   = body.waitlistWhenFull;
+    if (body.requiresPayment    !== undefined) patch.requires_payment     = body.requiresPayment;
+    if (body.feeAmount          !== undefined) patch.fee_amount           = body.feeAmount ?? null;
+    if (body.feeCurrency        !== undefined) patch.fee_currency         = body.feeCurrency;
+    if (body.status             !== undefined) patch.status               = body.status;
+    if (body.confirmationMessage!== undefined) patch.confirmation_message = body.confirmationMessage;
+    if (body.referencePrefix    !== undefined) patch.reference_prefix     = body.referencePrefix;
+
+    const { data, error } = await supabase
+      .from("registration_forms").update(patch).eq("id", p1).select().single();
+    if (error) return err(error.message);
+    return ok({ form: cam(data) });
+  }
+
   // PUT /update-certificate-template/:id
   if (p0 === "update-certificate-template" && p1) {
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -1977,6 +2163,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
   if (p0 === "delete-exam-session" && p1) {
     const { error } = await supabase.from("exam_sessions").delete().eq("id", p1);
     if (error) return err(error.message);
+    return ok({ success: true });
+  }
+  if (p0 === "delete-registration-form" && p1) {
+    const { error } = await supabase.from("registration_forms").delete().eq("id", p1);
+    if (error) return err("This form has registrations against it, so it cannot be deleted. Close it instead.");
     return ok({ success: true });
   }
   if (p0 === "delete-certificate-template" && p1) {
