@@ -14,7 +14,7 @@ import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
   Printer, ChevronRight, RefreshCw, Play, Square, Link2, Pause,
   ShieldCheck, FileText, History, Send, Lock, Unlock, X, AlertTriangle,
-  CheckCircle2, XCircle, Award, Trash2, Settings,
+  CheckCircle2, XCircle, Award, Trash2, Settings, Search, FileArchive, Loader2,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -42,6 +42,19 @@ interface Certificate {
   band?: string; issuedAt: string; issuedBy: string;
   revokedAt?: string | null; revokeReason?: string | null;
   snapshot: Record<string, string | number>;
+}
+
+// cam() on the API side recurses into nested objects, so the snapshot arrives
+// with camelCased keys even though it was written as snake_case. Read both,
+// rather than depending on which side of that conversion you are on.
+function certName(c: Certificate): string {
+  const s = c.snapshot || {};
+  return String(s.candidateName ?? s.candidate_name ?? "Unnamed candidate");
+}
+
+function certSchool(c: Certificate): string {
+  const s = c.snapshot || {};
+  return String(s.school ?? "");
 }
 
 interface Candidate {
@@ -1261,6 +1274,10 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmIssue, setConfirmIssue] = useState(false);
+  const [certSearch, setCertSearch] = useState("");
+  const [zip, setZip] = useState<{ busy: boolean; done: number; total: number; error: string }>(
+    { busy: false, done: 0, total: 0, error: "" }
+  );
 
   const load = useCallback(async () => {
     try {
@@ -1339,6 +1356,75 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
   };
 
   const downloadUrl = (c: Certificate) => `/api/certificate-pdf/${c.downloadKey}`;
+
+  const shownCerts = useMemo(() => {
+    const q = certSearch.trim().toLowerCase();
+    if (!q) return certs;
+    return certs.filter((c) =>
+      certName(c).toLowerCase().includes(q) ||
+      certSchool(c).toLowerCase().includes(q) ||
+      c.serial.toLowerCase().includes(q) ||
+      (c.band || "").toLowerCase().includes(q)
+    );
+  }, [certs, certSearch]);
+
+  // Zipping happens in the browser rather than the server. A sitting can have
+  // hundreds of certificates, and rendering them all inside one serverless
+  // request would blow the function timeout. Fetching them one at a time here
+  // is slower but finishes, and shows progress while it does.
+  //
+  // Downloads whatever is currently filtered, so a search doubles as a way to
+  // grab one school's certificates rather than the whole cohort.
+  const downloadAll = async () => {
+    const targets = shownCerts.filter((c) => !c.revokedAt);
+    if (targets.length === 0) return;
+
+    setZip({ busy: true, done: 0, total: targets.length, error: "" });
+    try {
+      const JSZip = (await import("jszip")).default;
+      const bundle = new JSZip();
+      const used = new Set<string>();
+      const failed: string[] = [];
+
+      for (let i = 0; i < targets.length; i++) {
+        const c = targets[i];
+        try {
+          const res = await fetch(downloadUrl(c));
+          if (!res.ok) throw new Error(String(res.status));
+
+          // Name files by candidate so the zip is browsable, with the serial
+          // keeping two students of the same name apart.
+          const safe = certName(c).replace(/[^A-Za-z0-9 ]+/g, "").trim().replace(/\s+/g, "-");
+          let name = `${safe || "candidate"}-${c.serial}.pdf`;
+          let n = 2;
+          while (used.has(name)) name = `${safe}-${c.serial}-${n++}.pdf`;
+          used.add(name);
+
+          bundle.file(name, await res.arrayBuffer());
+        } catch {
+          failed.push(certName(c));
+        }
+        setZip((z) => ({ ...z, done: i + 1 }));
+      }
+
+      const blob = await bundle.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${session?.sessionCode || "certificates"}-certificates.zip`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+      setZip({
+        busy: false, done: targets.length, total: targets.length,
+        error: failed.length
+          ? `${failed.length} certificate${failed.length === 1 ? "" : "s"} could not be added: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? " and others" : ""}. The rest are in the zip.`
+          : "",
+      });
+    } catch {
+      setZip((z) => ({ ...z, busy: false, error: "Could not build the zip. Try again." }));
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -1435,6 +1521,12 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
         action={
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={load}><RefreshCw size={13} /></Button>
+            <Button size="sm" variant="secondary" onClick={downloadAll}
+              disabled={zip.busy || liveCerts.length === 0}>
+              {zip.busy
+                ? <><Loader2 size={13} className="animate-spin" /> {zip.done} of {zip.total}</>
+                : <><FileArchive size={13} /> Download all</>}
+            </Button>
             <Button size="sm" onClick={() => setConfirmIssue(true)} disabled={eligible.length === 0 || busy}>
               <Award size={13} /> Issue to {eligible.length} candidate{eligible.length === 1 ? "" : "s"}
             </Button>
@@ -1448,12 +1540,43 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
             <p className="text-sm text-muted">No certificates issued yet.</p>
           </div>
         ) : (
-          <div className="divide-y divide-border max-h-[26rem] overflow-y-auto">
-            {certs.map((c) => (
+          <>
+            <div className="px-4 py-3 border-b border-border flex items-center gap-3 flex-wrap">
+              <div className="relative flex-1 min-w-[14rem]">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
+                <input
+                  value={certSearch}
+                  onChange={(e) => setCertSearch(e.target.value)}
+                  placeholder="Search by name, school or certificate number"
+                  className="w-full pl-8 pr-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 focus:border-primary"
+                />
+              </div>
+              <span className="text-xs text-muted whitespace-nowrap">
+                {certSearch
+                  ? `${shownCerts.length} of ${certs.length} shown`
+                  : `${certs.length} total`}
+              </span>
+            </div>
+
+            {zip.error && (
+              <p className="px-4 py-2.5 text-sm text-danger bg-red-50 border-b border-red-200">{zip.error}</p>
+            )}
+
+            {shownCerts.length === 0 ? (
+              <div className="py-12 text-center">
+                <Search size={22} className="text-subtle mx-auto mb-3" />
+                <p className="text-sm text-muted">Nothing matches &ldquo;{certSearch}&rdquo;.</p>
+              </div>
+            ) : (
+            <div className="divide-y divide-border max-h-[26rem] overflow-y-auto">
+            {shownCerts.map((c) => (
               <div key={c.id} className={`px-4 py-2.5 flex items-center gap-3 ${c.revokedAt ? "opacity-60" : ""}`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-medium text-ink">{c.snapshot?.candidate_name as string}</p>
+                    <p className="text-sm font-medium text-ink">{certName(c)}</p>
+                    {certSchool(c) && (
+                      <span className="text-xs text-muted">{certSchool(c)}</span>
+                    )}
                     {c.band && (
                       <span className="px-2 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
                         {c.band}
@@ -1495,7 +1618,9 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+            )}
+          </>
         )}
       </Card>
 
