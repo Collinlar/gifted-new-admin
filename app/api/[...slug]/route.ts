@@ -543,6 +543,96 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     });
   }
 
+  // GET /registration-analytics/:formId
+  //
+  // Aggregated here rather than in the browser, so the page stays fast when a
+  // popular programme has thousands of entries.
+  if (p0 === "registration-analytics" && p1) {
+    const { data: form } = await supabase
+      .from("registration_forms").select("fields, capacity, title").eq("id", p1).single();
+
+    const { data: regs } = await supabase
+      .from("registrations").select("user_id, status, payment_status, answers, submitted_at, created_at")
+      .eq("form_id", p1);
+
+    const rows = (regs || []) as {
+      user_id: string; status: string; payment_status: string;
+      answers: Record<string, unknown>; submitted_at?: string; created_at: string;
+    }[];
+
+    const count = (pred: (r: typeof rows[number]) => boolean) => rows.filter(pred).length;
+
+    // The funnel. Started means they opened it and something was saved; the
+    // gap between started and submitted is the number that matters.
+    const funnel = {
+      started:   rows.length,
+      submitted: count((r) => r.status !== "draft"),
+      accepted:  count((r) => r.status === "accepted"),
+      waitlisted:count((r) => r.status === "waitlisted"),
+      rejected:  count((r) => r.status === "rejected"),
+      paid:      count((r) => r.payment_status === "paid"),
+      paymentDue:count((r) => r.payment_status === "pending"),
+    };
+
+    // Which question loses people. Measured over abandoned drafts only:
+    // a field left blank by someone who never finished is a candidate for
+    // being the reason they stopped.
+    const drafts = rows.filter((r) => r.status === "draft");
+    const fields = (form?.fields || []) as { key: string; label: string; type: string }[];
+    const dropOff = fields
+      .filter((f) => f.type !== "section" && f.type !== "info")
+      .map((f) => {
+        const blank = drafts.filter((d) => {
+          const v = d.answers?.[f.key];
+          return v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
+        }).length;
+        return {
+          key: f.key, label: f.label, blank,
+          rate: drafts.length ? Math.round((blank / drafts.length) * 100) : 0,
+        };
+      })
+      .sort((a, b) => b.blank - a.blank);
+
+    // Reach, from the profile rather than the answers, so it works even when a
+    // form does not ask for school or grade
+    const userIds = [...new Set(rows.map((r) => r.user_id))];
+    const { data: people } = userIds.length
+      ? await supabase.from("users").select("id, school_name, grade, gender, country").in("id", userIds)
+      : { data: [] };
+
+    const tally = (key: string) => {
+      const acc: Record<string, number> = {};
+      for (const u of (people || []) as Record<string, string>[]) {
+        const v = String(u[key] || "").trim() || "Not given";
+        acc[v] = (acc[v] || 0) + 1;
+      }
+      return Object.entries(acc).sort((a, b) => b[1] - a[1]).map(([label, n]) => ({ label, n }));
+    };
+
+    // Repeat participation across every programme, which is the health signal
+    // that was unrecoverable when this lived in separate spreadsheets
+    const { data: allRegs } = userIds.length
+      ? await supabase.from("registrations").select("user_id, form_id").in("user_id", userIds)
+      : { data: [] };
+
+    const formsPerUser: Record<string, Set<string>> = {};
+    for (const r of (allRegs || []) as { user_id: string; form_id: string }[]) {
+      (formsPerUser[r.user_id] ??= new Set()).add(r.form_id);
+    }
+    const returning = Object.values(formsPerUser).filter((s) => s.size > 1).length;
+
+    return ok({
+      title: form?.title || "",
+      capacity: form?.capacity ?? null,
+      funnel,
+      dropOff,
+      schools: tally("school_name").slice(0, 12),
+      grades:  tally("grade"),
+      genders: tally("gender"),
+      repeat: { returning, total: userIds.length },
+    });
+  }
+
   // GET /certificate-templates
   if (p0 === "certificate-templates") {
     const { data } = await supabase
@@ -1222,6 +1312,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       cover_image_url:    body.coverImageUrl || null,
       accent_color:       body.accentColor || "#003366",
       intro_heading:      body.introHeading || null,
+      target_grades:      body.targetGrades || [],
     }).select().single();
     if (error) return err(error.message);
     return ok({ form: cam(data) });
@@ -1244,6 +1335,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
     if (error) return err(error.message);
     return ok({ updated: ids.length });
+  }
+
+  // POST /record-payment — for fees that arrive by mobile money rather than card
+  if (p0 === "record-payment") {
+    const { error } = await supabase.rpc("admin_record_payment", {
+      p_registration_id: body.registrationId,
+      p_status: body.status,
+      p_reference: body.reference || null,
+      p_note: body.note || null,
+      p_actor: actorFrom(req),
+    });
+    if (error) return err(error.message);
+    return ok({ success: true });
   }
 
   // POST /import-registrations — bring a Google Form export across.
@@ -1869,6 +1973,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.coverImageUrl      !== undefined) patch.cover_image_url      = body.coverImageUrl || null;
     if (body.accentColor        !== undefined) patch.accent_color         = body.accentColor;
     if (body.introHeading       !== undefined) patch.intro_heading        = body.introHeading;
+    if (body.targetGrades       !== undefined) patch.target_grades        = body.targetGrades;
 
     const { data, error } = await supabase
       .from("registration_forms").update(patch).eq("id", p1).select().single();

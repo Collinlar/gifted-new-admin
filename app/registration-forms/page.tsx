@@ -8,6 +8,9 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Spinner from "@/components/ui/Spinner";
 import ImageField from "@/components/ui/ImageField";
+import ImportPanel from "@/components/registrations/ImportPanel";
+import SubmissionPanel, { type Submission, displayName, displaySchool, displayGrade, answerOf }
+  from "@/components/registrations/SubmissionPanel";
 import api from "@/lib/api";
 import {
   STANDARD_FIELDS, FIELD_GROUPS, TYPE_LABELS, GRADES,
@@ -16,7 +19,7 @@ import {
 } from "@/lib/registrationFields";
 import {
   Plus, ArrowLeft, Trash2, ClipboardList, Save, Copy, ChevronUp, ChevronDown,
-  Users, Eye, Link2, Check, Settings,
+  Users, Eye, Link2, Check, Settings, UploadCloud, BarChart3, TrendingDown, Repeat, ChevronRight,
 } from "lucide-react";
 
 interface RegForm {
@@ -31,6 +34,7 @@ interface RegForm {
   coverImageUrl?: string | null;
   accentColor?: string; introHeading?: string | null;
   confirmationMessage?: string | null; referencePrefix?: string | null;
+  targetGrades?: string[];
   counts?: Record<string, number>;
 }
 
@@ -87,6 +91,19 @@ export default function RegistrationFormsPage() {
       await load();
       setEditing(res.data.form.id);
     } catch (e) { setError(serverMessage(e, "Could not copy that form.")); }
+  };
+
+  const remove = async (f: RegForm) => {
+    const n = f.counts?.total || 0;
+    if (n > 0) {
+      setError(`"${f.title}" has ${n} registration${n === 1 ? "" : "s"} against it. Close it instead of deleting, so the entries are not lost.`);
+      return;
+    }
+    if (!confirm(`Delete "${f.title}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/delete-registration-form/${f.id}`);
+      load();
+    } catch (e) { setError(serverMessage(e, "Could not delete that form.")); }
   };
 
   if (editing) {
@@ -150,6 +167,11 @@ export default function RegistrationFormsPage() {
                           className="p-1.5 rounded-lg text-subtle hover:text-ink hover:bg-surface">
                           <Copy size={13} />
                         </button>
+                        <button onClick={() => remove(f)}
+                          title={(f.counts?.total || 0) > 0 ? "Has registrations, close it instead" : "Delete"}
+                          className="p-1.5 rounded-lg text-subtle hover:text-danger hover:bg-red-50">
+                          <Trash2 size={13} />
+                        </button>
                       </div>
                     </div>
                   );
@@ -168,7 +190,7 @@ export default function RegistrationFormsPage() {
 function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void }) {
   const [form, setForm] = useState<RegForm | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"questions" | "preview" | "settings" | "submissions">("questions");
+  const [tab, setTab] = useState<"questions" | "preview" | "settings" | "submissions" | "insights">("questions");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
@@ -259,7 +281,8 @@ function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void })
             {([["questions", "Questions", ClipboardList],
                ["preview", "Preview", Eye],
                ["settings", "Settings", Settings],
-               ["submissions", "Submissions", Users]] as const).map(([v, label, Icon]) => (
+               ["submissions", "Submissions", Users],
+               ["insights", "Insights", BarChart3]] as const).map(([v, label, Icon]) => (
               <button key={v} onClick={() => setTab(v)}
                 className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
                   tab === v ? "border-primary text-primary" : "border-transparent text-muted hover:text-ink"
@@ -311,6 +334,7 @@ function FormBuilder({ formId, onBack }: { formId: string; onBack: () => void })
           {tab === "preview" && <PreviewTab form={form} />}
           {tab === "settings" && <SettingsTab form={form} set={set} />}
           {tab === "submissions" && <SubmissionsTab formId={formId} form={form} />}
+          {tab === "insights" && <InsightsTab formId={formId} />}
         </div>
 
         {picker && (
@@ -756,6 +780,36 @@ function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) 
           </div>
           <Toggle label="Waitlist people once it is full, rather than turning them away"
             value={form.waitlistWhenFull} onChange={(v) => set({ waitlistWhenFull: v })} />
+
+          <div className="space-y-2 pt-3 border-t border-border">
+            <label className="text-sm font-medium text-ink">
+              Show on the dashboard to
+              <span className="font-normal text-muted text-xs"> (leave empty for every grade)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {GRADES.map((g) => {
+                const on = (form.targetGrades || []).includes(g);
+                return (
+                  <button key={g} type="button"
+                    onClick={() => set({
+                      targetGrades: on
+                        ? (form.targetGrades || []).filter((x) => x !== g)
+                        : [...(form.targetGrades || []), g],
+                    })}
+                    className={`px-2.5 py-1 rounded text-xs border font-medium transition-colors ${
+                      on ? "bg-primary text-white border-primary"
+                         : "border-border text-muted hover:border-primary hover:text-primary"
+                    }`}>
+                    {g}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted">
+              This only controls whose dashboard shows the programme. The link still works for
+              anyone you send it to, so a student in another grade can still be invited directly.
+            </p>
+          </div>
         </div>
       </Card>
 
@@ -797,11 +851,7 @@ function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) 
 
 // ── Submissions ────────────────────────────────────────────────────────────
 
-interface Submission {
-  id: string; reference?: string; status: string; paymentStatus: string;
-  answers: Record<string, unknown>; submittedAt?: string; importedFrom?: string;
-  user?: { firstName?: string; lastName?: string; email?: string; schoolName?: string; grade?: string } | null;
-}
+// Submission and its display helpers live with the panel that renders them.
 
 const SUB_STATUS: Record<string, { label: string; cls: string }> = {
   draft:        { label: "Started",      cls: "bg-surface text-muted border-border" },
@@ -821,6 +871,8 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [openSub, setOpenSub] = useState<Submission | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -832,8 +884,9 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const name = (s: Submission) =>
-    [s.user?.firstName, s.user?.lastName].filter(Boolean).join(" ") || s.user?.email || "Unknown";
+  // Read what they submitted, falling back to their profile. Showing the
+  // profile first made a school typed into the form look unrecorded.
+  const name = displayName;
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -842,7 +895,7 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
       if (!q) return true;
       return name(s).toLowerCase().includes(q)
         || (s.user?.email || "").toLowerCase().includes(q)
-        || (s.user?.schoolName || "").toLowerCase().includes(q)
+        || displaySchool(s).toLowerCase().includes(q)
         || (s.reference || "").toLowerCase().includes(q);
     });
   }, [subs, search, filter]);
@@ -866,8 +919,8 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
       reference: s.reference || "",
       name: name(s),
       email: s.user?.email || "",
-      school: s.user?.schoolName || "",
-      grade: s.user?.grade || "",
+      school: displaySchool(s),
+      grade: displayGrade(s),
       status: SUB_STATUS[s.status]?.label || s.status,
       payment: s.paymentStatus,
       submitted: s.submittedAt ? new Date(s.submittedAt).toLocaleString() : "",
@@ -884,7 +937,14 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
 
   return (
     <Card title={`Submissions (${subs.length})`}
-      action={<Button size="sm" variant="secondary" onClick={exportSheet} disabled={shown.length === 0}>Export</Button>}
+      action={
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setImporting(true)}>
+            <UploadCloud size={13} /> Import
+          </Button>
+          <Button size="sm" variant="secondary" onClick={exportSheet} disabled={shown.length === 0}>Export</Button>
+        </div>
+      }
       padding={false}
     >
       <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
@@ -928,9 +988,9 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
               <div key={s.id} className="px-4 py-3 flex items-start gap-3">
                 <input type="checkbox" checked={picked.has(s.id)} onChange={() => toggle(s.id)}
                   className="mt-1 shrink-0" />
-                <div className="flex-1 min-w-0">
+                <button onClick={() => setOpenSub(s)} className="flex-1 min-w-0 text-left">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-medium text-ink">{name(s)}</p>
+                    <p className="text-sm font-medium text-ink hover:text-primary">{name(s)}</p>
                     <span className={`px-2 py-0.5 rounded text-xs font-medium border ${meta.cls}`}>{meta.label}</span>
                     {s.paymentStatus === "pending" && (
                       <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
@@ -942,17 +1002,191 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
                     )}
                   </div>
                   <p className="text-xs text-muted mt-0.5">
-                    {[s.user?.email, s.user?.schoolName, s.user?.grade && `Grade ${s.user.grade}`]
+                    {[s.user?.email, displaySchool(s), displayGrade(s)]
                       .filter(Boolean).join(" · ")}
                   </p>
                   {s.reference && <p className="text-xs font-mono text-subtle mt-0.5">{s.reference}</p>}
-                </div>
+                </button>
+                <ChevronRight size={15} className="text-subtle shrink-0 mt-1" />
               </div>
             );
           })}
         </div>
       )}
+
+      {importing && (
+        <ImportPanel formId={formId} fields={form.fields || []}
+          onClose={() => setImporting(false)} onImported={load} />
+      )}
+
+      {openSub && (
+        <SubmissionPanel
+          submission={subs.find((x) => x.id === openSub.id) || openSub}
+          fields={form.fields || []}
+          registerLink={`${(typeof window !== "undefined" && localStorage.getItem("giftedSiteUrl")) || ""}/register/${form.slug || form.id}`}
+          onClose={() => setOpenSub(null)}
+          onChanged={load}
+        />
+      )}
     </Card>
+  );
+}
+
+// ── Insights ───────────────────────────────────────────────────────────────
+
+interface Analytics {
+  capacity: number | null;
+  funnel: Record<string, number>;
+  dropOff: { key: string; label: string; blank: number; rate: number }[];
+  schools: { label: string; n: number }[];
+  grades:  { label: string; n: number }[];
+  repeat: { returning: number; total: number };
+}
+
+function InsightsTab({ formId }: { formId: string }) {
+  const [a, setA] = useState<Analytics | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get(`/registration-analytics/${formId}`)
+      .then((r) => setA(r.data))
+      .catch(() => setA(null))
+      .finally(() => setLoading(false));
+  }, [formId]);
+
+  if (loading) return <Card><Spinner text="Working out the numbers..." /></Card>;
+  if (!a) return <Card><p className="text-sm text-muted py-8 text-center">Could not load insights.</p></Card>;
+
+  const f = a.funnel;
+  const completion = f.started ? Math.round((f.submitted / f.started) * 100) : 0;
+  const abandoned = f.started - f.submitted;
+
+  if (f.started === 0) {
+    return (
+      <Card>
+        <div className="py-12 text-center">
+          <BarChart3 size={26} className="text-subtle mx-auto mb-3" />
+          <p className="text-sm text-muted">Nothing to show until people start registering.</p>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card title="From opened to accepted">
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Stat label="Opened the form" value={f.started} />
+            <Stat label="Submitted" value={f.submitted} tone="blue" />
+            <Stat label="Accepted" value={f.accepted} tone="green" />
+            <Stat label="Waitlisted" value={f.waitlisted} tone="amber" />
+          </div>
+
+          <div>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <span className="text-sm text-ink">{completion}% of people who started, finished</span>
+              {abandoned > 0 && <span className="text-xs text-amber-700">{abandoned} left part way</span>}
+            </div>
+            <div className="h-2 rounded-full bg-surface overflow-hidden">
+              <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${completion}%` }} />
+            </div>
+          </div>
+
+          {(f.paymentDue > 0 || f.paid > 0) && (
+            <p className="text-sm text-muted pt-2 border-t border-border">
+              {f.paid} paid, {f.paymentDue} still owing.
+            </p>
+          )}
+          {a.capacity != null && (
+            <p className="text-sm text-muted">{f.submitted} of {a.capacity} places taken.</p>
+          )}
+        </div>
+      </Card>
+
+      {abandoned > 0 && a.dropOff.some((d) => d.blank > 0) && (
+        <Card title="Where people stop">
+          <p className="text-xs text-muted mb-3 flex items-start gap-1.5">
+            <TrendingDown size={13} className="shrink-0 mt-0.5" />
+            Blank answers among the {abandoned} unfinished registrations. The question at the top is
+            the most likely reason someone gave up, and the first thing worth cutting or simplifying.
+          </p>
+          <div className="space-y-2">
+            {a.dropOff.filter((d) => d.blank > 0).slice(0, 8).map((d) => (
+              <div key={d.key}>
+                <div className="flex items-baseline justify-between gap-3 mb-1">
+                  <span className="text-sm text-ink truncate">{d.label}</span>
+                  <span className="text-xs text-muted shrink-0">{d.blank} left blank</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+                  <div className="h-full rounded-full bg-amber-400" style={{ width: `${d.rate}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        <Card title="Schools">
+          {a.schools.length === 0
+            ? <p className="text-sm text-muted py-4 text-center">No school data yet.</p>
+            : <Bars rows={a.schools} />}
+        </Card>
+        <Card title="Grades">
+          {a.grades.length === 0
+            ? <p className="text-sm text-muted py-4 text-center">No grade data yet.</p>
+            : <Bars rows={a.grades} />}
+        </Card>
+      </div>
+
+      <Card title="Coming back">
+        <div className="flex items-start gap-3">
+          <Repeat size={16} className="text-primary shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm text-ink">
+              <strong>{a.repeat.returning}</strong> of {a.repeat.total} people registering here have
+              entered another Gifted programme too.
+            </p>
+            <p className="text-xs text-muted mt-1">
+              Repeat participation is the clearest signal a programme is working, and it was
+              unrecoverable while every intake lived in its own spreadsheet.
+            </p>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function Bars({ rows }: { rows: { label: string; n: number }[] }) {
+  const max = Math.max(...rows.map((r) => r.n), 1);
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => (
+        <div key={r.label}>
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <span className="text-sm text-ink truncate" title={r.label}>{r.label}</span>
+            <span className="text-xs text-muted shrink-0">{r.n}</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+            <div className="h-full rounded-full bg-primary" style={{ width: `${(r.n / max) * 100}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone = "plain" }: { label: string; value: number; tone?: string }) {
+  const tones: Record<string, string> = {
+    plain: "text-ink", blue: "text-blue-600", green: "text-emerald-600", amber: "text-amber-600",
+  };
+  return (
+    <div className="bg-surface border border-border rounded-xl px-3 py-2.5">
+      <p className={`text-xl font-bold ${tones[tone]}`}>{value}</p>
+      <p className="text-xs text-muted mt-0.5">{label}</p>
+    </div>
   );
 }
 
