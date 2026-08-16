@@ -7,11 +7,11 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import api from "@/lib/api";
-import { Plus, Eye, Trash2, Search, UploadCloud } from "lucide-react";
+import { Plus, Eye, Trash2, Search, UploadCloud, Globe, Lock } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 interface Question { question: string; answers: string[]; correctAnswer: string; explanation: string; }
-interface Quiz { _id: string; title: string; contest?: boolean; duration?: number; questions?: Question[]; }
+interface Quiz { _id: string; title: string; contest?: boolean; duration?: number; questions?: Question[]; publish?: boolean; grade?: string | string[]; }
 
 export default function AssessmentPage() {
   const router = useRouter();
@@ -19,6 +19,10 @@ export default function AssessmentPage() {
   const [tab, setTab] = useState<"normal" | "contests">("normal");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<"all" | "published" | "draft">("all");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
 
   const load = async () => {
     try {
@@ -34,8 +38,41 @@ export default function AssessmentPage() {
   const filtered = items.filter((q) => {
     const matchTab = tab === "contests" ? q.contest === true : !q.contest;
     const matchSearch = !search.trim() || q.title?.toLowerCase().includes(search.toLowerCase());
-    return matchTab && matchSearch;
+    const matchStatus = status === "all" ? true
+      : status === "published" ? q.publish === true : q.publish !== true;
+    return matchTab && matchSearch && matchStatus;
   });
+
+  // Publishing is what decides whether students can see an assessment at all,
+  // so it belongs on the list rather than buried in the edit form.
+  const setPublished = async (ids: string[], publish: boolean) => {
+    if (ids.length === 0) return;
+    setBusy(true); setNotice("");
+    // Move the switch immediately; the list is the control surface and a
+    // half-second of nothing happening reads as a broken toggle.
+    setItems((p) => p.map((q) => (ids.includes(q._id) ? { ...q, publish } : q)));
+    try {
+      await Promise.all(ids.map((id) => api.put(`/update-exam/${id}`, { publish })));
+      setNotice(
+        ids.length === 1
+          ? publish ? "Published. Students can see it now." : "Unpublished. Hidden from students."
+          : `${ids.length} assessments ${publish ? "published" : "unpublished"}.`
+      );
+      setPicked(new Set());
+    } catch {
+      setNotice("Could not save that. Reloading.");
+      load();
+    } finally { setBusy(false); }
+  };
+
+  const toggle = (id: string) => setPicked((p) => {
+    const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+
+  const counts = {
+    published: items.filter((q) => q.publish === true).length,
+    draft: items.filter((q) => q.publish !== true).length,
+  };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this quiz? This cannot be undone.")) return;
@@ -94,6 +131,45 @@ export default function AssessmentPage() {
             </div>
           </div>
 
+          {/* Status filter. Draft is where a half-built assessment sits, and it
+              is worth being able to see that list on its own. */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {([
+              ["all", `Everything (${items.length})`],
+              ["published", `Live for students (${counts.published})`],
+              ["draft", `Draft (${counts.draft})`],
+            ] as const).map(([v, label]) => (
+              <button key={v} onClick={() => { setStatus(v); setPicked(new Set()); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  status === v ? "bg-primary text-white border-primary"
+                               : "border-border text-muted hover:border-primary hover:text-primary"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {notice && (
+            <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5">
+              {notice}
+            </p>
+          )}
+
+          {picked.size > 0 && (
+            <div className="flex items-center gap-2 flex-wrap bg-primary-light/40 border border-border rounded-xl px-4 py-2.5">
+              <span className="text-sm font-medium text-ink">{picked.size} selected</span>
+              <Button size="sm" disabled={busy} onClick={() => setPublished([...picked], true)}>
+                <Globe size={13} /> Publish
+              </Button>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => setPublished([...picked], false)}>
+                <Lock size={13} /> Unpublish
+              </Button>
+              <button onClick={() => setPicked(new Set())} className="text-xs text-muted hover:text-ink ml-1">
+                Clear
+              </button>
+            </div>
+          )}
+
           {/* Table */}
           <Card padding={false}>
             {loading ? (
@@ -111,18 +187,49 @@ export default function AssessmentPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
+                    <th className="px-4 py-3 w-8">
+                      <input type="checkbox"
+                        checked={filtered.length > 0 && filtered.every((q) => picked.has(q._id))}
+                        onChange={(e) => setPicked(e.target.checked ? new Set(filtered.map((q) => q._id)) : new Set())} />
+                    </th>
                     <th className="text-left px-5 py-3 text-muted font-medium">Title</th>
                     <th className="text-left px-5 py-3 text-muted font-medium">Questions</th>
                     <th className="text-left px-5 py-3 text-muted font-medium">Duration</th>
+                    <th className="text-left px-5 py-3 text-muted font-medium">Visible to students</th>
                     <th className="px-5 py-3" />
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((q) => (
-                    <tr key={q._id} className="border-b border-border last:border-0 hover:bg-surface/60 transition-colors">
-                      <td className="px-5 py-3.5 font-medium text-ink">{q.title}</td>
+                    <tr key={q._id} className={`border-b border-border last:border-0 hover:bg-surface/60 transition-colors ${q.publish ? "" : "bg-surface/30"}`}>
+                      <td className="px-4 py-3.5">
+                        <input type="checkbox" checked={picked.has(q._id)} onChange={() => toggle(q._id)} />
+                      </td>
+                      <td className="px-5 py-3.5 font-medium text-ink">
+                        {q.title}
+                        {!q.publish && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-surface text-muted border border-border">
+                            Draft
+                          </span>
+                        )}
+                      </td>
                       <td className="px-5 py-3.5 text-muted">{q.questions?.length ?? 0}</td>
                       <td className="px-5 py-3.5 text-muted">{q.duration ? `${q.duration} min` : "—"}</td>
+                      <td className="px-5 py-3.5">
+                        <button
+                          onClick={() => setPublished([q._id], !q.publish)}
+                          disabled={busy}
+                          title={q.publish ? "Hide from students" : "Make visible to students"}
+                          className="flex items-center gap-2 group disabled:opacity-60"
+                        >
+                          <span className={`w-9 h-5 rounded-full transition-colors relative flex items-center shrink-0 ${q.publish ? "bg-emerald-500" : "bg-border"}`}>
+                            <span className={`absolute w-4 h-4 bg-white rounded-full shadow transition-transform ${q.publish ? "translate-x-4" : "translate-x-0.5"}`} />
+                          </span>
+                          <span className={`text-xs font-medium ${q.publish ? "text-emerald-700" : "text-muted"}`}>
+                            {q.publish ? "Live" : "Hidden"}
+                          </span>
+                        </button>
+                      </td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center justify-end gap-1">
                           <button
