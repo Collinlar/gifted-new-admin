@@ -154,6 +154,42 @@ async function insertExamRow(row: Record<string, unknown>) {
   return { data: null, dropped, error: { message: "Could not save the assessment." } };
 }
 
+// ── Marketplace ────────────────────────────────────────────────────────────
+//
+// Shop rows are returned raw rather than through cam(). cam() recurses into
+// nested objects, which is how certificate snapshots ended up with their
+// fields silently renamed underneath the code reading them. Products, orders
+// and entitlements all use the database's own snake_case here, end to end, so
+// there is nothing to translate and nothing to get wrong.
+
+const PRODUCT_FIELDS = [
+  "sku", "title", "subtitle", "description", "kind",
+  "links_to_type", "links_to_id", "price", "compare_at", "currency",
+  "cover_image_url", "stock", "requires_shipping",
+  "category", "subject", "grades", "tags", "author",
+  "featured", "status", "sort_order",
+] as const;
+
+/** Only known columns, so an unexpected key from the browser cannot reach the table. */
+function productRow(body: Record<string, unknown>) {
+  const row: Record<string, unknown> = {};
+  for (const f of PRODUCT_FIELDS) {
+    if (body[f] !== undefined) row[f] = body[f];
+  }
+  // Numbers arrive from text inputs as strings
+  for (const n of ["price", "compare_at", "stock"] as const) {
+    if (row[n] !== undefined) {
+      row[n] = row[n] === "" || row[n] === null ? null : Number(row[n]);
+    }
+  }
+  if (row.price === null) row.price = 0;
+  // An empty string on a uuid column raises rather than reading as null
+  if (row.links_to_id === "")   row.links_to_id = null;
+  if (row.links_to_type === "") row.links_to_type = null;
+  if (row.sku === "")           row.sku = null;
+  return row;
+}
+
 // ── Router ─────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string[] }> }) {
@@ -483,6 +519,85 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
         "Content-Disposition": `attachment; filename="${who}-${cert.serial}.pdf"`,
         "Cache-Control": "private, max-age=300",
       },
+    });
+  }
+
+  // GET /shop-products — the catalogue, with the download file attached and
+  // how many of each have actually sold
+  if (p0 === "shop-products") {
+    const { data: products, error } = await supabase
+      .from("marketplace_products").select("*")
+      .order("created_at", { ascending: false });
+    if (error) return err(error.message);
+
+    const ids = (products || []).map((p: { id: string }) => p.id);
+    const [{ data: files }, { data: sold }] = await Promise.all([
+      ids.length ? supabase.from("product_files").select("*").in("product_id", ids)
+                 : Promise.resolve({ data: [] }),
+      ids.length ? supabase.from("order_items").select("product_id, quantity").in("product_id", ids)
+                 : Promise.resolve({ data: [] }),
+    ]);
+
+    const fileBy = Object.fromEntries(
+      (files || []).map((f: { product_id: string }) => [f.product_id, f])
+    );
+    const soldBy: Record<string, number> = {};
+    for (const r of (sold || []) as { product_id: string; quantity: number }[]) {
+      soldBy[r.product_id] = (soldBy[r.product_id] || 0) + (r.quantity || 1);
+    }
+
+    return ok({
+      products: (products || []).map((p: { id: string }) => ({
+        ...p,
+        file: fileBy[p.id] || null,
+        sold: soldBy[p.id] || 0,
+      })),
+    });
+  }
+
+  // GET /shop-linkables — courses and assessments that can be put on sale.
+  // Anything already listed is excluded, so the picker cannot create a second
+  // shopfront for the same course.
+  if (p0 === "shop-linkables") {
+    const [{ data: listed }, { data: courses }, { data: exams }] = await Promise.all([
+      supabase.from("marketplace_products").select("links_to_type, links_to_id")
+        .not("links_to_id", "is", null),
+      supabase.from("courses").select("id, title, cost, thumbnail, publish"),
+      supabase.from("exams").select("id, title, image, publish, contest"),
+    ]);
+
+    const taken = new Set(
+      (listed || []).map((l: { links_to_type: string; links_to_id: string }) =>
+        `${l.links_to_type}:${l.links_to_id}`)
+    );
+
+    return ok({
+      courses: (courses || []).filter((c: { id: string }) => !taken.has(`course:${c.id}`)),
+      assessments: (exams || []).filter((e: { id: string }) => !taken.has(`assessment:${e.id}`)),
+    });
+  }
+
+  // GET /shop-orders — every order with its lines and who placed it
+  if (p0 === "shop-orders") {
+    const { data: orders, error } = await supabase
+      .from("orders").select("*, order_items(*)")
+      .order("created_at", { ascending: false }).limit(500);
+    if (error) return err(error.message);
+
+    const userIds = [...new Set((orders || []).map((o: { user_id: string }) => o.user_id))];
+    const { data: people } = userIds.length
+      ? await supabase.from("users")
+          .select("id, first_name, last_name, email, mobile_number, grade")
+          .in("id", userIds)
+      : { data: [] };
+
+    const byId = Object.fromEntries((people || []).map((u: { id: string }) => [u.id, u]));
+
+    return ok({
+      orders: (orders || []).map((o: { user_id: string }) => ({
+        ...o,
+        buyer: byId[o.user_id] || null,
+      })),
     });
   }
 
@@ -1218,6 +1333,62 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   const body = await req.json().catch(() => ({}));
 
+  // POST /create-product
+  if (p0 === "create-product") {
+    const row = productRow(body);
+    if (!row.title) return err("Give the item a title.");
+
+    const { data, error } = await supabase
+      .from("marketplace_products").insert(row).select().single();
+    if (error) return err(error.message);
+
+    if (body.file_url) {
+      const { error: fErr } = await supabase.from("product_files").upsert({
+        product_id: data.id,
+        file_url: body.file_url,
+        file_name: body.file_name || null,
+      });
+      if (fErr) return err(`Saved, but the file did not attach: ${fErr.message}`);
+    }
+    return ok({ product: data });
+  }
+
+  // POST /list-in-shop — put an existing course or assessment on sale without
+  // retyping any of it. This is what makes a paid course reachable from the
+  // Learning Hub: without a listing there is nothing to add to a cart.
+  if (p0 === "list-in-shop") {
+    const { type, id, price } = body as { type: string; id: string; price: number };
+    if (!["course", "assessment"].includes(type)) return err("That cannot be listed.");
+    if (!id) return err("Nothing selected.");
+
+    const source = type === "course"
+      ? await supabase.from("courses").select("title, description, thumbnail, cost").eq("id", id).single()
+      : await supabase.from("exams").select("title, description, image").eq("id", id).single();
+
+    if (source.error) return err(source.error.message);
+    const s = source.data as Record<string, unknown>;
+
+    // A course already carries a price. Reuse it unless one was typed in,
+    // scrubbed because that column has held "GHS 200" as well as 200.
+    const existing = Number(String(s.cost ?? "").replace(/[^0-9.]/g, "")) || 0;
+
+    const { data, error } = await supabase.from("marketplace_products").insert({
+      title: s.title,
+      description: s.description || null,
+      cover_image_url: (s.thumbnail || s.image || null) as string | null,
+      kind: type,
+      links_to_type: type,
+      links_to_id: id,
+      price: Number.isFinite(Number(price)) && String(price ?? "").trim() !== ""
+        ? Number(price)
+        : existing,
+      status: "draft",
+    }).select().single();
+
+    if (error) return err(error.message);
+    return ok({ product: data });
+  }
+
   // POST /admin-login
   if (p0 === "admin-login") {
     const { email, password } = body;
@@ -1896,6 +2067,78 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   if (denied) return denied;
   const body = await req.json().catch(() => ({}));
 
+  // PUT /update-product/:id
+  if (p0 === "update-product" && p1) {
+    const row = productRow(body);
+
+    if (Object.keys(row).length) {
+      const { error } = await supabase
+        .from("marketplace_products").update(row).eq("id", p1);
+      if (error) return err(error.message);
+    }
+
+    // file_url is sent as its own key because it lives in product_files, the
+    // table with no read policy. An empty string means detach the file.
+    if (body.file_url !== undefined) {
+      if (body.file_url) {
+        const { error } = await supabase.from("product_files").upsert({
+          product_id: p1,
+          file_url: body.file_url,
+          file_name: body.file_name || null,
+          updated_at: new Date().toISOString(),
+        });
+        if (error) return err(error.message);
+      } else {
+        await supabase.from("product_files").delete().eq("product_id", p1);
+      }
+    }
+
+    return ok({ success: true });
+  }
+
+  // PUT /order-fulfilment/:id — packed, dispatched, delivered
+  if (p0 === "order-fulfilment" && p1) {
+    const stage = String(body.fulfilment || "");
+    if (!["none", "pending", "dispatched", "delivered"].includes(stage)) {
+      return err("Unknown delivery stage.");
+    }
+    const { error } = await supabase.from("orders").update({
+      fulfilment: stage,
+      dispatched_at: stage === "dispatched" ? new Date().toISOString() : null,
+    }).eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
+  // PUT /settle-order/:id — record a payment that arrived by mobile money or
+  // cash. Goes through the same function as a card payment, so access is
+  // granted and stock moves in exactly one place rather than two.
+  if (p0 === "settle-order" && p1) {
+    const { data, error } = await supabase.rpc("admin_settle_order", {
+      p_order_id: p1,
+      p_reference: body.reference || null,
+      p_actor: body.actor || "admin",
+    });
+    if (error) return err(error.message);
+    if (data?.error) return err(data.error);
+    return ok({ success: true, alreadyPaid: !!data?.alreadyPaid });
+  }
+
+  // PUT /grant-entitlement — hand someone access, or take it back
+  if (p0 === "grant-entitlement") {
+    const { userId, itemType, itemId, granted } = body;
+    if (!userId || !itemType || !itemId) return err("Missing who or what.");
+    const { data, error } = await supabase.rpc("admin_set_entitlement", {
+      p_user_id: userId,
+      p_item_type: itemType,
+      p_item_id: itemId,
+      p_granted: granted !== false,
+    });
+    if (error) return err(error.message);
+    if (data?.error) return err(data.error);
+    return ok({ success: true });
+  }
+
   // PUT /set-item-tracks/:itemType/:itemId — replace the full set of track tags for one item
   if (p0 === "set-item-tracks" && p1 && p2) {
     const itemType = p1;
@@ -2261,6 +2504,25 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
   // camps/tracks are new tables with no mongo_id column — use eq("id") directly
   // instead of del()'s id-or-mongo_id lookup. track_items/camp_registrations
   // cascade-delete automatically via their FK ON DELETE CASCADE.
+  // Archiving rather than deleting is the norm for anything sold, since an
+  // order_item points back at the product. But an item that never sold is
+  // just a mistake, and deleting it is what someone actually wants.
+  if (p0 === "delete-product") {
+    const { count } = await supabase
+      .from("order_items").select("*", { count: "exact", head: true }).eq("product_id", p1);
+
+    if (count && count > 0) {
+      const { error } = await supabase
+        .from("marketplace_products").update({ status: "archived" }).eq("id", p1);
+      if (error) return err(error.message);
+      return ok({ success: true, archived: true, orders: count });
+    }
+
+    const { error } = await supabase.from("marketplace_products").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true, archived: false });
+  }
+
   if (p0 === "delete-camp") {
     const { error } = await supabase.from("camps").delete().eq("id", p1);
     if (error) return err(error.message);
