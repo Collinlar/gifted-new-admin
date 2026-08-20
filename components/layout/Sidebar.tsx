@@ -8,7 +8,7 @@ import {
   Users2, Star, Zap, Brain, Layers, Map, BarChart3,
   MessageSquare, Package, CreditCard, Calendar, X,
   ChevronDown, LogOut, Megaphone, ClipboardCheck, Award, Medal, GraduationCap,
-  Shield, BookMarked, Hash, History, Tag, Compass, Tent, PieChart, ShoppingBag,
+  Shield, BookMarked, Hash, History, Tag, Compass, Tent, PieChart, ShoppingBag, Home,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 
@@ -28,6 +28,7 @@ const NAV: NavGroup[] = [
     label: "Overview",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/homepage", label: "Homepage", icon: Home },
       { href: "/users", label: "All Users", icon: Users },
     ],
   },

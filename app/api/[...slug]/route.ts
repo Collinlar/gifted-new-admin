@@ -522,6 +522,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     });
   }
 
+  // GET /homepage — every section, live content and any unpublished draft
+  if (p0 === "homepage") {
+    const { data, error } = await supabase
+      .from("homepage_sections").select("*").order("sort_order", { ascending: true });
+    if (error) return err(error.message);
+
+    // Raw, not through cam(). These rows are jsonb the homepage reads by its
+    // own key names; camelCasing them would rename hero.primaryTarget's
+    // siblings and quietly detach the page from its content.
+    return ok({
+      sections: data || [],
+      hasDraft: (data || []).some((r: { draft: unknown }) => r.draft !== null),
+    });
+  }
+
   // GET /shop-products — the catalogue, with the download file attached and
   // how many of each have actually sold
   if (p0 === "shop-products") {
@@ -2093,6 +2108,51 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
       }
     }
 
+    return ok({ success: true });
+  }
+
+  // PUT /homepage-section/:key — writes the draft, never the live content.
+  // Publishing is a separate, deliberate action.
+  if (p0 === "homepage-section" && p1) {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+
+    if (body.content !== undefined) patch.draft = body.content;
+    if (body.enabled !== undefined) patch.enabled = !!body.enabled;
+    if (body.sortOrder !== undefined) patch.sort_order = Number(body.sortOrder);
+
+    const { error } = await supabase
+      .from("homepage_sections").update(patch).eq("key", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+
+  // PUT /homepage-order — one write for a whole reorder, so the list cannot
+  // end up half renumbered if something fails partway
+  if (p0 === "homepage-order") {
+    const keys: string[] = Array.isArray(body.keys) ? body.keys : [];
+    if (!keys.length) return err("Nothing to reorder.");
+
+    for (let i = 0; i < keys.length; i++) {
+      const { error } = await supabase
+        .from("homepage_sections")
+        .update({ sort_order: i, updated_at: new Date().toISOString() })
+        .eq("key", keys[i]);
+      if (error) return err(error.message);
+    }
+    return ok({ success: true });
+  }
+
+  // PUT /publish-homepage
+  if (p0 === "publish-homepage") {
+    const { data, error } = await supabase.rpc("publish_homepage");
+    if (error) return err(error.message);
+    return ok({ success: true, sections: data?.sections ?? 0 });
+  }
+
+  // PUT /discard-homepage-draft
+  if (p0 === "discard-homepage-draft") {
+    const { error } = await supabase.rpc("discard_homepage_draft");
+    if (error) return err(error.message);
     return ok({ success: true });
   }
 
