@@ -2302,6 +2302,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.accentColor        !== undefined) patch.accent_color         = body.accentColor;
     if (body.introHeading       !== undefined) patch.intro_heading        = body.introHeading;
     if (body.targetGrades       !== undefined) patch.target_grades        = body.targetGrades;
+    // What the person sees after submitting. Card payment is not live, so the
+    // instructions and the pay link have to come from here rather than from
+    // a hardcoded sentence promising something that will not arrive.
+    if (body.paymentNote        !== undefined) patch.payment_note         = body.paymentNote || null;
+    if (body.paymentLinkUrl     !== undefined) patch.payment_link_url     = body.paymentLinkUrl || null;
+    if (body.paymentLinkLabel   !== undefined) patch.payment_link_label   = body.paymentLinkLabel || null;
+    if (body.postSubmitNote     !== undefined) patch.post_submit_note     = body.postSubmitNote || null;
 
     const { data, error } = await supabase
       .from("registration_forms").update(patch).eq("id", p1).select().single();

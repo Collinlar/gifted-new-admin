@@ -34,6 +34,11 @@ interface RegForm {
   coverImageUrl?: string | null;
   accentColor?: string; introHeading?: string | null;
   confirmationMessage?: string | null; referencePrefix?: string | null;
+  // The confirmation screen, controlled from the form rather than hardcoded
+  paymentNote?: string | null;
+  paymentLinkUrl?: string | null;
+  paymentLinkLabel?: string | null;
+  postSubmitNote?: string | null;
   targetGrades?: string[];
   counts?: Record<string, number>;
 }
@@ -837,12 +842,66 @@ function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) 
         </div>
       </Card>
 
-      <Card title="After they register">
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-ink">Confirmation message</label>
-          <textarea value={form.confirmationMessage || ""} onChange={(e) => set({ confirmationMessage: e.target.value })}
-            rows={3} placeholder="Thank you. We will confirm your place by email once entries close."
-            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary resize-none" />
+      <Card title="After they register" subtitle="Everything on the confirmation screen, in the order it appears.">
+        <div className="space-y-5">
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-ink">Confirmation message</label>
+            <textarea value={form.confirmationMessage || ""} onChange={(e) => set({ confirmationMessage: e.target.value })}
+              rows={3} placeholder="Thank you. We will confirm your place by email once entries close."
+              className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary resize-none" />
+            <p className="text-xs text-muted">The first thing they read, under the tick.</p>
+          </div>
+
+          {form.requiresPayment && (
+            <div className="rounded-lg border border-border p-4 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-ink">How to pay</p>
+                <p className="text-xs text-muted mt-0.5">
+                  This is the box on the confirmation screen. Until card payment is switched on,
+                  whatever you write here is the only instruction they get.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-ink">Payment instructions</label>
+                <textarea value={form.paymentNote || ""} onChange={(e) => set({ paymentNote: e.target.value })}
+                  rows={4}
+                  placeholder={"Pay GHS 150 on *776*100# (merchant code 1703), reference AB Review. Send proof to info@atdp.africa or WhatsApp 0593967781."}
+                  className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary resize-none" />
+                <p className="text-xs text-muted">
+                  Leave empty and the screen just says the place is held and the fee is still due.
+                  It will not promise a payment link.
+                </p>
+              </div>
+
+              <div className="grid sm:grid-cols-[1fr_180px] gap-3">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-ink">Payment link</label>
+                  <input value={form.paymentLinkUrl || ""} onChange={(e) => set({ paymentLinkUrl: e.target.value })}
+                    placeholder="https://built.ac/p/Ngol9r"
+                    className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary" />
+                  <p className="text-xs text-muted">
+                    Shown as a button rather than a web address buried in a paragraph.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-ink">Button wording</label>
+                  <input value={form.paymentLinkLabel || ""} onChange={(e) => set({ paymentLinkLabel: e.target.value })}
+                    placeholder="Pay now"
+                    className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-ink">Anything else they should know</label>
+            <textarea value={form.postSubmitNote || ""} onChange={(e) => set({ postSubmitNote: e.target.value })}
+              rows={3}
+              placeholder="Bring a pen and your school ID on the day. Results are announced in December."
+              className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-primary resize-none" />
+            <p className="text-xs text-muted">Sits at the bottom, for anything that is not about money.</p>
+          </div>
         </div>
       </Card>
     </div>
