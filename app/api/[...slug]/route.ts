@@ -20,12 +20,31 @@ function err(msg: string, status = 400) {
 
 // Convert snake_case Supabase rows to the camelCase shape pages expect,
 // and remap `id` → `_id` so existing pages work without modification.
+// Columns whose contents are keyed by names this code does not own, so
+// renaming anything inside them silently detaches the data from whatever
+// reads it.
+//
+// registrations.answers is the case that made this necessary. Its keys are the
+// form's own field keys, first_name, school_name, mobile_number. cam() was
+// turning those into firstName, schoolName, mobileNumber, so the review panel
+// looked up answers["first_name"], found nothing, and reported every one of
+// them as "Left blank" while the row in the database held the real values.
+// Only email and grade survived, because they have no underscore to convert.
+//
+// A quiz's questions[].answers is an array of strings, which passes through
+// this branch identically, so nothing else changes.
+const OPAQUE_KEYS = new Set(["answers"]);
+
 function cam(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (k === "id") {
       out["_id"] = v;
       out["id"] = v;
+      continue;
+    }
+    if (OPAQUE_KEYS.has(k)) {
+      out[k] = v;
       continue;
     }
     const camel = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
@@ -666,10 +685,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     const byId = Object.fromEntries((people || []).map((u: { id: string }) => [u.id, u]));
 
     return ok({
-      submissions: (regs || []).map((r: Record<string, unknown>) => ({
-        ...cam(r),
-        user: byId[r.user_id as string] ? cam(byId[r.user_id as string]) : null,
-      })),
+      submissions: (regs || []).map((r: Record<string, unknown>) => {
+        // A guest's claim token is their credential for that registration.
+        // The admin never needs it, and select("*") would otherwise put it in
+        // the browser and in any export taken from this list.
+        const { claim_token: _omit, ...safe } = r;
+        return {
+          ...cam(safe),
+          user: byId[r.user_id as string] ? cam(byId[r.user_id as string]) : null,
+        };
+      }),
     });
   }
 

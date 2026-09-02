@@ -23,7 +23,16 @@ export interface Submission {
     firstName?: string; lastName?: string; email?: string;
     mobileNumber?: string; schoolName?: string; grade?: string;
   } | null;
+  // Set when somebody registered without an account. user_id is then null and
+  // there is no profile to fall back on, so contact details come from these
+  // and from the answers themselves.
+  userId?: string | null;
+  guestEmail?: string | null;
+  guestName?: string | null;
+  guestPhone?: string | null;
 }
+
+export const isGuest = (s: Submission) => !s.userId;
 
 const fmt = (s?: string | null) =>
   s ? new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
@@ -43,7 +52,22 @@ export function answerOf(s: Submission, key: string): string {
 export function displayName(s: Submission): string {
   const fromAnswers = [answerOf(s, "first_name"), answerOf(s, "last_name")].filter(Boolean).join(" ");
   if (fromAnswers) return fromAnswers;
-  return [s.user?.firstName, s.user?.lastName].filter(Boolean).join(" ") || s.user?.email || "Unknown";
+  return [s.user?.firstName, s.user?.lastName].filter(Boolean).join(" ")
+    || s.guestName || s.user?.email || s.guestEmail || "Unknown";
+}
+
+/**
+ * Contact details, answers first.
+ *
+ * A guest has no profile at all, so reading these off s.user showed nothing
+ * for them even though they had just typed an email into the form.
+ */
+export function displayEmail(s: Submission): string {
+  return answerOf(s, "email") || s.user?.email || s.guestEmail || "";
+}
+
+export function displayPhone(s: Submission): string {
+  return answerOf(s, "mobile_number") || s.user?.mobileNumber || s.guestPhone || "";
 }
 
 export function displaySchool(s: Submission): string {
@@ -113,16 +137,21 @@ export default function SubmissionPanel({ submission: s, fields, registerLink, o
 
         {/* Who and where to reach them */}
         <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
-          {s.user?.email && (
-            <a href={`mailto:${s.user.email}`} className="flex items-center gap-1.5 text-primary hover:underline">
-              <Mail size={13} /> {s.user.email}
+          {displayEmail(s) && (
+            <a href={`mailto:${displayEmail(s)}`} className="flex items-center gap-1.5 text-primary hover:underline">
+              <Mail size={13} /> {displayEmail(s)}
             </a>
           )}
-          {(answerOf(s, "mobile_number") || s.user?.mobileNumber) && (
-            <a href={`tel:${answerOf(s, "mobile_number") || s.user?.mobileNumber}`}
+          {displayPhone(s) && (
+            <a href={`tel:${displayPhone(s)}`}
               className="flex items-center gap-1.5 text-primary hover:underline">
-              <Phone size={13} /> {answerOf(s, "mobile_number") || s.user?.mobileNumber}
+              <Phone size={13} /> {displayPhone(s)}
             </a>
+          )}
+          {isGuest(s) && (
+            <span className="text-xs px-2 py-0.5 rounded-md bg-surface border border-border text-muted">
+              Registered without an account
+            </span>
           )}
         </div>
 

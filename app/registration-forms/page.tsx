@@ -9,7 +9,7 @@ import Input from "@/components/ui/Input";
 import Spinner from "@/components/ui/Spinner";
 import ImageField from "@/components/ui/ImageField";
 import ImportPanel from "@/components/registrations/ImportPanel";
-import SubmissionPanel, { type Submission, displayName, displaySchool, displayGrade, answerOf }
+import SubmissionPanel, { type Submission, displayName, displaySchool, displayGrade, displayEmail, answerOf, isGuest }
   from "@/components/registrations/SubmissionPanel";
 import api from "@/lib/api";
 import {
@@ -894,7 +894,7 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
       if (filter !== "all" && s.status !== filter) return false;
       if (!q) return true;
       return name(s).toLowerCase().includes(q)
-        || (s.user?.email || "").toLowerCase().includes(q)
+        || displayEmail(s).toLowerCase().includes(q)
         || displaySchool(s).toLowerCase().includes(q)
         || (s.reference || "").toLowerCase().includes(q);
     });
@@ -918,7 +918,8 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
     const ws = XLSX.utils.json_to_sheet(shown.map((s) => ({
       reference: s.reference || "",
       name: name(s),
-      email: s.user?.email || "",
+      email: displayEmail(s),
+      account: isGuest(s) ? "guest" : "has account",
       school: displaySchool(s),
       grade: displayGrade(s),
       status: SUB_STATUS[s.status]?.label || s.status,
@@ -1002,7 +1003,7 @@ function SubmissionsTab({ formId, form }: { formId: string; form: RegForm }) {
                     )}
                   </div>
                   <p className="text-xs text-muted mt-0.5">
-                    {[s.user?.email, displaySchool(s), displayGrade(s)]
+                    {[displayEmail(s), displaySchool(s), displayGrade(s)]
                       .filter(Boolean).join(" · ")}
                   </p>
                   {s.reference && <p className="text-xs font-mono text-subtle mt-0.5">{s.reference}</p>}
