@@ -133,7 +133,8 @@ export default function AddQuizPage() {
         program,
         featured,
         published,
-        attemptsAllowed: Number(attemptsAllowed) || 1,
+        // Blank falls back to 1; a typed 0 means no limit and is kept
+        attemptsAllowed: attemptsAllowed.trim() === "" ? 1 : Number(attemptsAllowed) || 0,
         allowReview,
         displayScores,
         showFeedback,
@@ -248,7 +249,7 @@ export default function AddQuizPage() {
               <div className="grid grid-cols-2 gap-4">
                 <Input label="Time limit (minutes)" type="number" placeholder="e.g. 60" value={timeLimit} onChange={(e) => setTimeLimit(e.target.value)} />
                 <Input label="Number of questions" type="number" placeholder="e.g. 20" value={numQuestions} onChange={(e) => setNumQuestions(e.target.value)} />
-                <Input label="Attempts allowed" type="number" placeholder="1" value={attemptsAllowed} onChange={(e) => setAttemptsAllowed(e.target.value)} />
+                <Input label="Attempts allowed" type="number" placeholder="1" hint="0 means they can retake it as often as they like" value={attemptsAllowed} onChange={(e) => setAttemptsAllowed(e.target.value)} />
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-ink">Program</label>
                   <select value={program} onChange={(e) => setProgram(e.target.value)}

@@ -100,7 +100,9 @@ function examRow(body: Record<string, unknown>) {
     display_scores:      body.displayScores ?? true,
     show_feedback_form:  pick("showFeedbackForm", "showFeedback") || false,
     shuffle_questions:   body.shuffleQuestions || false,
-    attempts_allowed:    body.attemptsAllowed || 1,
+    // 0 means no limit, so it has to survive. `|| 1` turned every
+    // deliberately uncapped assessment back into a one-attempt one.
+    attempts_allowed:    body.attemptsAllowed ?? 1,
     level:               body.level,
     difficulty:          body.difficulty,
     instructor:          body.instructor,

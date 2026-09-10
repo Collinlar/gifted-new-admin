@@ -109,7 +109,7 @@ export default function QuizDetailsPage() {
       contest:          !!quiz.contest,
       featured:         !!quiz.featured,
       publish:          !!quiz.publish,
-      attemptsAllowed:  quiz.attemptsAllowed ?? 1,
+      attemptsAllowed:  quiz.attemptsAllowed ?? 1,   // 0 is kept, not coerced
       allowQuizReview:  !!quiz.allowQuizReview,
       displayScores:    !!quiz.displayScores,
       showFeedbackForm: !!quiz.showFeedbackForm,
@@ -142,7 +142,9 @@ export default function QuizDetailsPage() {
         contest:          metaForm.contest,
         featured:         metaForm.featured,
         publish:          metaForm.publish,
-        attemptsAllowed:  Number(metaForm.attemptsAllowed) || 1,
+        // 0 is a real choice: no limit. Only a blank box falls back to 1.
+        attemptsAllowed:  String(metaForm.attemptsAllowed ?? "").trim() === ""
+                            ? 1 : Number(metaForm.attemptsAllowed) || 0,
         allowQuizReview:  metaForm.allowQuizReview,
         displayScores:    metaForm.displayScores,
         showFeedbackForm: metaForm.showFeedbackForm,
@@ -284,7 +286,7 @@ export default function QuizDetailsPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Input label="Difficulty" value={String(metaForm.difficulty || "")} onChange={(e) => setM("difficulty", e.target.value)} placeholder="Easy, Medium, Hard" />
-                  <Input label="Attempts allowed" type="number" value={String(metaForm.attemptsAllowed || 1)} onChange={(e) => setM("attemptsAllowed", e.target.value)} />
+                  <Input label="Attempts allowed" type="number" hint="0 means they can retake it as often as they like" value={String(metaForm.attemptsAllowed ?? 1)} onChange={(e) => setM("attemptsAllowed", e.target.value)} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Input label="Instructor" value={String(metaForm.instructor || "")} onChange={(e) => setM("instructor", e.target.value)} />
@@ -341,7 +343,7 @@ export default function QuizDetailsPage() {
                     ["Difficulty", quiz.difficulty],
                     ["Instructor", quiz.instructor],
                     ["Program", quiz.program],
-                    ["Attempts allowed", quiz.attemptsAllowed],
+                    ["Attempts allowed", Number(quiz.attemptsAllowed) > 0 ? quiz.attemptsAllowed : "No limit"],
                     ["Status", quiz.publish ? "Published" : "Draft"],
                     ["Mode", quiz.mode === "practice" ? "Practice" : quiz.mode === "both" ? "Exam + Practice" : "Exam"],
                     ["Hints in practice", quiz.hintsEnabled !== false ? "Enabled" : "Disabled"],
