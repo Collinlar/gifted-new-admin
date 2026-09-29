@@ -2704,15 +2704,33 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
   }
 
   if (p0 === "delete-admin") return del("admins");
-  if (p0 === "delete-announcement") return del("announcements");
-  if (p0 === "delete-badge") return del("badges");
+  // Neither table has a mongo_id column, so del()'s id-or-mongo_id filter
+  // made both of these return 400 every time. Deleting an announcement or a
+  // badge from admin has never worked.
+  if (p0 === "delete-announcement" && p1) {
+    const { error } = await supabase.from("announcements").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
+  if (p0 === "delete-badge" && p1) {
+    const { error } = await supabase.from("badges").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
   if (p0 === "delete-competition") return del("competitions");
   if (p0 === "delete-course") return del("courses");
   if (p0 === "delete-exam") return del("exams");
   if (p0 === "delete-flashcard") return del("flashcards");
   if (p0 === "delete-group") return del("groups");
   if (p0 === "delete-interest") return del("interests");
-  if (p0 === "delete-timed-challenge") return del("timed_challenge_sets");
+  // Not del(): that matches on id or mongo_id, and timed_challenge_sets has
+  // no mongo_id column, so every delete came back 400 with "column does not
+  // exist". Same reason camps and tracks are handled separately above.
+  if (p0 === "delete-timed-challenge" && p1) {
+    const { error } = await supabase.from("timed_challenge_sets").delete().eq("id", p1);
+    if (error) return err(error.message);
+    return ok({ success: true });
+  }
   if (p0 === "delete-pathway") return del("pathways");
   if (p0 === "delete-addon")   return del("addons");
   if (p0 === "delete-enrollment") {
