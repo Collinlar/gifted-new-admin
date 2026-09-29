@@ -941,13 +941,37 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ assessments: enriched, total: count ?? 0, page, limit });
   }
 
-  // GET /all-timed-challenges  — uses timed_challenge_sets (grouped) table
+  // GET /all-timed-challenges  — enriched with the course or track it is
+  // attached to, the same way flashcards are, so the list says who will
+  // actually see it. The old fallback to the legacy per-question
+  // timed_challenges table is gone: mixing two different models into one
+  // list is how the two halves of this feature drifted apart.
   if (p0 === "all-timed-challenges") {
     const { data } = await supabase.from("timed_challenge_sets").select("*").order("created_at", { ascending: false });
-    if (data !== null) return ok({ timedChallenges: rows(data), allTimedChallenges: rows(data) });
-    // fallback to legacy individual-question table
-    const { data: legacy } = await supabase.from("timed_challenges").select("*").order("created_at", { ascending: false });
-    return ok({ timedChallenges: rows(legacy), allTimedChallenges: rows(legacy) });
+    if (!data || data.length === 0) return ok({ timedChallenges: [], allTimedChallenges: [] });
+
+    const courseIds = [...new Set(data.map((r: Record<string,unknown>) => r.course_id).filter(Boolean))] as string[];
+    const trackIds  = [...new Set(data.map((r: Record<string,unknown>) => r.track_id).filter(Boolean))]  as string[];
+
+    const cMap: Record<string, string> = {};
+    const tMap: Record<string, string> = {};
+
+    if (courseIds.length > 0) {
+      const { data: coursesData } = await supabase.from("courses").select("mongo_id,title").in("mongo_id", courseIds);
+      for (const c of (coursesData || [])) cMap[c.mongo_id] = c.title;
+    }
+    if (trackIds.length > 0) {
+      const { data: tracksData } = await supabase.from("tracks").select("id,name").in("id", trackIds);
+      for (const t of (tracksData || [])) tMap[t.id] = t.name;
+    }
+
+    const enriched = data.map((r: Record<string,unknown>) => ({
+      ...(cam(r) as Record<string,unknown>),
+      courseTitle: cMap[(r.course_id as string) || ""] || "",
+      trackName:   tMap[(r.track_id  as string) || ""] || "",
+    }));
+
+    return ok({ timedChallenges: enriched, allTimedChallenges: enriched });
   }
 
   // GET /all-transactions
@@ -1988,12 +2012,41 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   }
 
   // POST /add-timed-challenge  — inserts into timed_challenge_sets
+  //
+  // course_id is the course's mongo_id, matching flashcards, because that is
+  // the id the student app carries through the flashcards page. Without a
+  // course or a track on the row there is nothing for a student to match it
+  // to, which is exactly why this feature never reached anybody.
   if (p0 === "add-timed-challenge") {
     const { data, error } = await supabase.from("timed_challenge_sets").insert({
-      title: body.title,
-      duration: body.duration || 30,
+      title:     body.title,
+      duration:  body.duration || 30,
       questions: body.questions || [],
+      course_id: body.courseId || null,
+      track_id:  body.trackId  || null,
+      grade:     body.grade    || null,
+      subject:   body.subject  || null,
+      publish:   body.publish === true,
     }).select().single();
+    if (error) return err(error.message);
+    return ok({ challenge: cam(data) });
+  }
+
+  // POST /update-timed-challenge/:id  — used for the publish toggle and for
+  // correcting a challenge after it has been saved
+  if (p0 === "update-timed-challenge" && slug[1]) {
+    const patch: Record<string, unknown> = {};
+    if (body.title     !== undefined) patch.title     = body.title;
+    if (body.duration  !== undefined) patch.duration  = Number(body.duration) || 30;
+    if (body.questions !== undefined) patch.questions = body.questions;
+    if (body.courseId  !== undefined) patch.course_id = body.courseId || null;
+    if (body.trackId   !== undefined) patch.track_id  = body.trackId  || null;
+    if (body.grade     !== undefined) patch.grade     = body.grade    || null;
+    if (body.subject   !== undefined) patch.subject   = body.subject  || null;
+    if (body.publish   !== undefined) patch.publish   = body.publish === true;
+
+    const { data, error } = await supabase.from("timed_challenge_sets")
+      .update(patch).eq("id", slug[1]).select().single();
     if (error) return err(error.message);
     return ok({ challenge: cam(data) });
   }

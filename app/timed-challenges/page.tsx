@@ -12,27 +12,54 @@ import api from "@/lib/api";
 import { Plus, Trash2, Check } from "lucide-react";
 
 interface Question { question: string; answers: string[]; correctAnswer: string; }
-interface Challenge { _id: string; title?: string; duration?: number; questions?: unknown[]; }
+interface Challenge {
+  _id: string; title?: string; duration?: number; questions?: unknown[];
+  courseId?: string; trackId?: string; courseTitle?: string; trackName?: string;
+  grade?: string; subject?: string; publish?: boolean;
+}
+interface Course { _id?: string; mongoId?: string; title?: string; }
+interface Track  { _id?: string; id?: string; name?: string; }
 
 const emptyQ = (): Question => ({ question: "", answers: ["", "", "", ""], correctAnswer: "" });
+const emptyForm = { title: "", duration: "", courseId: "", trackId: "", grade: "", subject: "", publish: false };
 
 export default function TimedChallengesPage() {
   const [items, setItems] = useState<Challenge[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", duration: "" });
+  const [form, setForm] = useState(emptyForm);
   const [questions, setQuestions] = useState<Question[]>([emptyQ()]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
   const load = async () => {
     try {
-      const res = await api.get("/all-timed-challenges");
+      const [res, trackRes, courseRes] = await Promise.all([
+        api.get("/all-timed-challenges"),
+        api.get("/all-tracks"),
+        api.get("/all-courses-admin-info"),
+      ]);
       setItems(res.data.allTimedChallenges || res.data.timedChallenges || []);
+      setTracks(trackRes.data.tracks || []);
+      setCourses(courseRes.data.courses || []);
     } catch { setItems([]); } finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);
+
+  // Nothing reaches a student until it is published, so this is the switch
+  // that matters most on this screen.
+  const togglePublish = async (c: Challenge) => {
+    const next = !c.publish;
+    setItems((p) => p.map((x) => (x._id === c._id ? { ...x, publish: next } : x)));
+    try {
+      await api.post(`/update-timed-challenge/${c._id}`, { publish: next });
+    } catch {
+      setItems((p) => p.map((x) => (x._id === c._id ? { ...x, publish: !next } : x)));
+    }
+  };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this challenge?")) return;
@@ -50,11 +77,23 @@ export default function TimedChallengesPage() {
   const handleSave = async () => {
     setFormError("");
     if (!form.title.trim()) return setFormError("Give this challenge a title.");
+    // Without one of these the challenge sits in the table where no student
+    // can ever match it, which is how this feature stayed invisible.
+    if (!form.courseId && !form.trackId) {
+      return setFormError("Attach this to a course or a track, or no student will see it.");
+    }
+    const usable = questions.filter((q) => q.question.trim() && q.answers.filter((a) => a.trim()).length > 1 && q.correctAnswer.trim());
+    if (usable.length === 0) {
+      return setFormError("Add at least one question with two options and the right answer ticked.");
+    }
+    if (usable.length < questions.length) {
+      return setFormError(`${questions.length - usable.length} question(s) are missing options or a ticked answer. Students would never see those.`);
+    }
     setSaving(true);
     try {
       await api.post("/add-timed-challenge", { ...form, duration: Number(form.duration) || 30, questions });
       setPanelOpen(false);
-      setForm({ title: "", duration: "" });
+      setForm(emptyForm);
       setQuestions([emptyQ()]);
       await load();
     } catch {
@@ -83,7 +122,7 @@ export default function TimedChallengesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  {["Title", "Time/question", "Questions", ""].map((h) => (
+                  {["Title", "Shown to", "Time/question", "Questions", "Live", ""].map((h) => (
                     <th key={h} className="text-left px-5 py-3 text-muted font-medium">{h}</th>
                   ))}
                 </tr>
@@ -92,8 +131,19 @@ export default function TimedChallengesPage() {
                 {items.map((c) => (
                   <tr key={c._id} className="border-b border-border last:border-0 hover:bg-surface/60 transition-colors">
                     <td className="px-5 py-3.5 font-medium text-ink">{c.title || "Untitled"}</td>
+                    <td className="px-5 py-3.5 text-muted">
+                      {c.courseTitle || c.trackName || <span className="text-danger">Nobody, not attached</span>}
+                    </td>
                     <td className="px-5 py-3.5 text-muted">{c.duration ? `${c.duration}s` : "—"}</td>
                     <td className="px-5 py-3.5 text-muted">{(c.questions as unknown[] | undefined)?.length ?? 0}</td>
+                    <td className="px-5 py-3.5">
+                      <button onClick={() => togglePublish(c)}
+                        className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
+                          c.publish ? "bg-emerald-50 text-success" : "bg-surface text-muted hover:text-ink"
+                        }`}>
+                        {c.publish ? "Live" : "Hidden"}
+                      </button>
+                    </td>
                     <td className="px-5 py-3.5 text-right">
                       <button onClick={() => handleDelete(c._id)} className="p-1.5 rounded-lg text-subtle hover:text-danger hover:bg-red-50 transition-colors">
                         <Trash2 size={14} />
@@ -112,6 +162,47 @@ export default function TimedChallengesPage() {
               <Input label="Title" placeholder="Challenge title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
               <Input label="Seconds per question" type="number" placeholder="30" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} />
             </div>
+
+            {/* Who sees it. A challenge with neither is unreachable. */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Course</label>
+                <select
+                  value={form.courseId}
+                  onChange={(e) => setForm({ ...form, courseId: e.target.value, trackId: e.target.value ? "" : form.trackId })}
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                >
+                  <option value="">No course</option>
+                  {courses.map((c) => (
+                    <option key={c._id} value={c.mongoId || c._id}>{c.title || "Untitled course"}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-ink mb-1.5">Track</label>
+                <select
+                  value={form.trackId}
+                  onChange={(e) => setForm({ ...form, trackId: e.target.value, courseId: e.target.value ? "" : form.courseId })}
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                >
+                  <option value="">No track</option>
+                  {tracks.map((t) => (
+                    <option key={t._id} value={t._id}>{t.name || "Untitled track"}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Grade (optional)" placeholder="e.g. 5" value={form.grade} onChange={(e) => setForm({ ...form, grade: e.target.value })} />
+              <Input label="Subject (optional)" placeholder="e.g. Mathematics" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
+            </div>
+
+            <label className="flex items-center gap-2.5 text-sm text-ink cursor-pointer">
+              <input type="checkbox" checked={form.publish} onChange={(e) => setForm({ ...form, publish: e.target.checked })}
+                className="w-4 h-4 accent-primary" />
+              Show this to students straight away
+            </label>
 
             <div className="space-y-3">
               <div className="flex items-center justify-between">
