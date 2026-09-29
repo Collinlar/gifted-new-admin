@@ -37,9 +37,8 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Brand mark */}
         <div className="flex items-center justify-center gap-3 mb-10">
-          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
-            <span className="text-white font-bold text-lg">G</span>
-          </div>
+          <img src="/brand/gifted-mark-light.png" alt="" width={30} height={40}
+            className="h-10 w-auto select-none" draggable={false} />
           <div>
             <p className="text-white font-semibold text-lg leading-none">Gifted Admin</p>
             <p className="text-white/40 text-xs mt-0.5">Management Dashboard</p>

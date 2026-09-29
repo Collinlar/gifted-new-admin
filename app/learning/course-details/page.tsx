@@ -125,8 +125,8 @@ const arr = (v: unknown): string[] => {
 };
 
 const STEP_META: Record<StepType, { label: string; color: string; Icon: React.ElementType }> = {
-  lesson:       { label: "Lesson",      color: "#185FA5", Icon: BookOpen      },
-  assessment:   { label: "Assessment",  color: "#003366", Icon: FileQuestion  },
+  lesson:       { label: "Lesson",      color: "#215E9C", Icon: BookOpen      },
+  assessment:   { label: "Assessment",  color: "#103254", Icon: FileQuestion  },
   practice:     { label: "Practice",    color: "#1D9E75", Icon: Target        },
   flashcard_set:{ label: "Flash Cards", color: "#7C3AED", Icon: Layers        },
   contest:      { label: "Contest",     color: "#E8A020", Icon: Zap           },

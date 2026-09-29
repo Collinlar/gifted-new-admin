@@ -1523,7 +1523,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       reference_prefix:   body.referencePrefix || null,
       slug:               body.slug || null,
       cover_image_url:    body.coverImageUrl || null,
-      accent_color:       body.accentColor || "#003366",
+      accent_color:       body.accentColor || "#103254",
       intro_heading:      body.introHeading || null,
       target_grades:      body.targetGrades || [],
     }).select().single();

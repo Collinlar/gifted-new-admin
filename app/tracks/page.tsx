@@ -24,10 +24,10 @@ interface Track {
 const COLORS = [
   { label: "Teal", value: "#1D9E75" },
   { label: "Gold", value: "#E8A020" },
-  { label: "Blue", value: "#185FA5" },
-  { label: "Navy", value: "#0A0E1A" },
+  { label: "Blue", value: "#215E9C" },
+  { label: "Ink", value: "#0A0E1A" },
   { label: "Rose", value: "#F43F5E" },
-  { label: "Indigo", value: "#4F46E5" },
+  { label: "Navy", value: "#1D5790" },
 ];
 const ICONS = ["🧮", "📖", "🔬", "💻", "🌍", "🚀", "🎯", "🏆"];
 

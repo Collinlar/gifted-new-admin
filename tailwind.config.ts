@@ -1,5 +1,23 @@
 import type { Config } from "tailwindcss";
 
+// The Gifted navy. Kept in step with gifted-project/src/lib/navy.js, which is
+// where this ramp is defined and commented. The admin had been on indigo while
+// the product was on navy, which is part of why the blue changed depending on
+// where you were standing.
+const NAVY = {
+  50:  "#F0F4F8",
+  100: "#DFE8F1",
+  200: "#BCD1E6",
+  300: "#87B0D9",
+  400: "#4B8CCE",
+  500: "#2A6EB2",
+  600: "#1D5790",
+  700: "#15426F",
+  800: "#103254",
+  900: "#0B1F33",
+  950: "#07131F",
+};
+
 const config: Config = {
   content: [
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
@@ -10,17 +28,21 @@ const config: Config = {
     extend: {
       colors: {
         primary: {
-          DEFAULT: "#4F46E5",   // indigo-600
-          light: "#EEF2FF",     // indigo-50
-          dark: "#3730A3",      // indigo-800
-          muted: "#818CF8",     // indigo-400
+          DEFAULT: NAVY[600],
+          light: NAVY[50],
+          dark: NAVY[800],
+          muted: NAVY[400],
         },
+        navy: NAVY,
+        // Tailwind's own blue is a brighter, different hue. Re-pointed so a
+        // stray bg-blue-600 cannot reintroduce the old mismatch.
+        blue: NAVY,
         accent: {
           DEFAULT: "#F59E0B",   // amber-500
           light: "#FEF3C7",
           dark: "#92400E",
         },
-        sidebar: "#1E1B4B",     // deep indigo
+        sidebar: NAVY[900],     // the homepage panel navy
         ink: "#0F172A",
         body: "#334155",
         muted: "#64748B",

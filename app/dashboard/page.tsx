@@ -122,7 +122,7 @@ export default function DashboardPage() {
                   <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} allowDecimals={false} />
                   <Tooltip contentStyle={{ borderRadius: "8px", border: "1px solid #E2E8F0", boxShadow: "none", fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                  <Line type="monotone" dataKey="New registrations" stroke="#4F46E5" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
+                  <Line type="monotone" dataKey="New registrations" stroke="#1D5790" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
                   <Line type="monotone" dataKey="Active users" stroke="#10B981" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} strokeDasharray="5 3" />
                 </LineChart>
               </ResponsiveContainer>
@@ -138,7 +138,7 @@ export default function DashboardPage() {
                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} allowDecimals={false} />
                   <Tooltip contentStyle={{ borderRadius: "8px", border: "1px solid #E2E8F0", boxShadow: "none", fontSize: 12 }} />
-                  <Bar dataKey="count" fill="#4F46E5" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="count" fill="#1D5790" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

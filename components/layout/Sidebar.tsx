@@ -121,10 +121,10 @@ export default function Sidebar({ open, onClose }: Props) {
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-white/8 shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-              <span className="text-white text-xs font-bold">G</span>
-            </div>
+          <div className="flex items-center gap-2.5">
+            {/* The real mark in its bone finish, since the rail is navy */}
+            <img src="/brand/gifted-mark-light.png" alt="" width={21} height={28}
+              className="h-7 w-auto select-none" draggable={false} />
             <span className="text-white font-semibold text-sm tracking-tight">Gifted Admin</span>
           </div>
           <button onClick={onClose} className="lg:hidden text-white/40 hover:text-white p-1">

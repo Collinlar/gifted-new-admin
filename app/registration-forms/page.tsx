@@ -581,7 +581,7 @@ const SAMPLE: Record<string, string> = {
 };
 
 function PreviewTab({ form }: { form: RegForm }) {
-  const accent = form.accentColor || "#003366";
+  const accent = form.accentColor || "#103254";
   const fields = form.fields || [];
   const auto = fields.filter((f) => f.source || f.remember).length;
 
@@ -603,13 +603,13 @@ function PreviewTab({ form }: { form: RegForm }) {
             {form.programTitle && (
               <p className="text-xs uppercase tracking-wide mb-1" style={{ color: accent }}>{form.programTitle}</p>
             )}
-            <h1 className="text-2xl font-bold text-[#003366] leading-tight">
+            <h1 className="text-2xl font-bold text-[#103254] leading-tight">
               {form.introHeading || form.title}
             </h1>
             {form.description && (
               <p className="text-[15px] leading-relaxed mt-3 whitespace-pre-line text-gray-700">{form.description}</p>
             )}
-            <div className="flex flex-wrap gap-4 mt-4 text-xs text-[#336699]">
+            <div className="flex flex-wrap gap-4 mt-4 text-xs text-[#2666A6]">
               {form.closesAt && <span>Closes {new Date(form.closesAt).toLocaleDateString()}</span>}
               {form.requiresPayment && <span>{form.feeCurrency} {form.feeAmount}</span>}
             </div>
@@ -629,7 +629,7 @@ function PreviewTab({ form }: { form: RegForm }) {
               if (f.type === "section") {
                 return (
                   <div key={f.id} className="sm:col-span-2 pt-2">
-                    <h2 className="text-sm font-bold uppercase tracking-wide text-[#003366]">{f.label}</h2>
+                    <h2 className="text-sm font-bold uppercase tracking-wide text-[#103254]">{f.label}</h2>
                     <div className="h-px bg-gray-100 mt-2" />
                   </div>
                 );
@@ -644,7 +644,7 @@ function PreviewTab({ form }: { form: RegForm }) {
               return (
                 <div key={f.id} className={f.half ? "" : "sm:col-span-2"}>
                   <div className="flex items-baseline justify-between gap-2 mb-1.5">
-                    <label className="text-sm font-medium text-[#003366]">
+                    <label className="text-sm font-medium text-[#103254]">
                       {f.label}{f.required && <span className="text-red-500"> *</span>}
                     </label>
                     {why && <span className="text-[11px] text-emerald-600 shrink-0">{why}</span>}
@@ -661,7 +661,7 @@ function PreviewTab({ form }: { form: RegForm }) {
                   ) : f.type === "multiselect" ? (
                     <div className="flex flex-wrap gap-1.5">
                       {(f.options || ["Option"]).slice(0, 4).map((o) => (
-                        <span key={o} className="px-3 py-1.5 rounded-lg text-sm border border-[#D8E1EA] text-[#336699]">{o}</span>
+                        <span key={o} className="px-3 py-1.5 rounded-lg text-sm border border-[#D8E1EA] text-[#2666A6]">{o}</span>
                       ))}
                     </div>
                   ) : (
@@ -669,7 +669,7 @@ function PreviewTab({ form }: { form: RegForm }) {
                       {filled || f.placeholder || (f.type === "select" ? "Choose one..." : "")}
                     </div>
                   )}
-                  {f.help && <p className="text-xs mt-1.5 text-[#336699]">{f.help}</p>}
+                  {f.help && <p className="text-xs mt-1.5 text-[#2666A6]">{f.help}</p>}
                 </div>
               );
             })}
@@ -746,10 +746,10 @@ function SettingsTab({ form, set }: { form: RegForm; set: (p: Partial<RegForm>) 
             <div className="space-y-1">
               <label className="text-sm font-medium text-ink">Accent colour</label>
               <div className="flex items-center gap-2">
-                <input type="color" value={form.accentColor || "#003366"}
+                <input type="color" value={form.accentColor || "#103254"}
                   onChange={(e) => set({ accentColor: e.target.value })}
                   className="h-[42px] w-14 border border-border rounded-lg px-1 cursor-pointer" />
-                <input value={form.accentColor || "#003366"}
+                <input value={form.accentColor || "#103254"}
                   onChange={(e) => set({ accentColor: e.target.value })}
                   className="flex-1 border border-border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-primary" />
               </div>

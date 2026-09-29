@@ -27,7 +27,7 @@ const COLORS = [
   { label: "Gold", value: "#F59E0B" },
   { label: "Silver", value: "#94A3B8" },
   { label: "Bronze", value: "#D97706" },
-  { label: "Indigo", value: "#4F46E5" },
+  { label: "Navy", value: "#1D5790" },
   { label: "Emerald", value: "#10B981" },
   { label: "Rose", value: "#F43F5E" },
 ];

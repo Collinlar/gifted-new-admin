@@ -45,7 +45,7 @@ const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
 
 const TYPE_META: Record<AnnouncementType, { label: string; color: string; Icon: React.ElementType; defaultCta: string }> = {
   general:  { label: "General",    color: "#4B5563", Icon: Megaphone,     defaultCta: "" },
-  exam:     { label: "Assessment", color: "#185FA5", Icon: FileQuestion,  defaultCta: "Start assessment" },
+  exam:     { label: "Assessment", color: "#215E9C", Icon: FileQuestion,  defaultCta: "Start assessment" },
   contest:  { label: "Contest",    color: "#E8A020", Icon: Zap,           defaultCta: "Enter contest" },
   results:  { label: "Results",    color: "#1D9E75", Icon: CheckCircle,   defaultCta: "View results" },
   course:   { label: "Course",     color: "#7C3AED", Icon: BookOpen,      defaultCta: "Start learning" },
