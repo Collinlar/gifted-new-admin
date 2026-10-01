@@ -10,6 +10,7 @@ import api from "@/lib/api";
 import { Search, Download, Eye, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useRouter } from "next/navigation";
+import { GRADE_OPTIONS, gradeLabel } from "@/lib/grades";
 
 interface User {
   _id: string;
@@ -19,7 +20,7 @@ interface User {
   mobileNumber?: string;
   school?: string;
   gender?: string;
-  grade?: string;
+  grade?: number | string;
   country?: string;
   purposeOfRegistration?: string | string[];
   [key: string]: unknown;
@@ -193,7 +194,7 @@ export default function UsersPage() {
       Category: (u.category as string) || "—",
       School: u.school || "—",
       Gender: u.gender || "—",
-      Grade: (u.grade as string) || "—",
+      Grade: gradeLabel(u.grade) || "—",
       Country: u.country || "—",
       Purpose: Array.isArray(u.purposeOfRegistration)
         ? (u.purposeOfRegistration as string[]).join(", ")
@@ -240,14 +241,18 @@ export default function UsersPage() {
               <FilterDropdown label="Gender"   value={gender}   options={GENDER_OPTIONS}   onSelect={handleGender} />
               <FilterDropdown label="Purpose"  value={purpose}  options={interests}         onSelect={handlePurpose} />
 
-              {/* Grade text search */}
-              <input
-                type="search"
+              {/* Grade is one of twelve known values, so it is a list rather
+                  than a text box that could be typed a way nothing matches. */}
+              <select
                 value={grade}
                 onChange={(e) => handleGrade(e.target.value)}
-                placeholder="Grade..."
-                className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary w-28 transition-colors ${grade ? "border-primary bg-primary-light/20" : "border-border"}`}
-              />
+                className={`px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary transition-colors ${grade ? "border-primary bg-primary-light/20" : "border-border"}`}
+              >
+                <option value="">Any grade</option>
+                {GRADE_OPTIONS.map((o) => (
+                  <option key={o.value} value={String(o.value)}>{o.label}</option>
+                ))}
+              </select>
 
               {hasFilters && (
                 <button onClick={clearFilters} className="text-sm text-muted hover:text-ink underline whitespace-nowrap">
@@ -298,7 +303,7 @@ export default function UsersPage() {
                             </td>
                             <td className="px-4 py-3 text-muted text-xs whitespace-nowrap">
                               {u.grade ? (
-                                <span className="px-2 py-0.5 rounded bg-surface border border-border">{u.grade as string}</span>
+                                <span className="px-2 py-0.5 rounded bg-surface border border-border">{gradeLabel(u.grade)}</span>
                               ) : "—"}
                             </td>
                             <td className="px-4 py-3 text-muted text-xs whitespace-nowrap">

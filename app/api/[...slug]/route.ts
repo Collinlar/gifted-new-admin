@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { issueToken, verifyToken, bearerFrom } from "@/lib/adminToken";
 import { renderCertificate, SAMPLE_SNAPSHOT, starterFields } from "@/lib/certificate";
+import { parseGrade, matchesGrade } from "@/lib/grades";
 
 // Where a certificate's QR code and verification line point. Set
 // NEXT_PUBLIC_STUDENT_URL if the student site moves.
@@ -304,7 +305,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     if (q)        query = query.or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,email.ilike.%${q}%`);
     if (category) query = query.ilike("category", category);
     if (gender)   query = query.ilike("gender", gender);
-    if (grade)    query = query.ilike("grade", `%${grade}%`);
+    // grade is an integer now, so ilike would error outright. A filter we
+    // cannot parse matches nothing rather than everything.
+    if (grade)    query = query.eq("grade", parseGrade(grade) ?? -1);
     if (purpose)  query = query.contains("purpose_of_registration", [purpose]);
 
     const from = page * limit;
@@ -445,7 +448,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       supabase.from("user_announcement_dismissals").select("announcement_id").eq("user_id", userId),
     ]);
 
-    const userGrade = String(userRes.data?.grade || "");
+    // Mirrors getAnnouncementsForUser in the student app. Comparing the raw
+    // stored string meant only a user stored as "7".."12" ever matched.
+    const userGrade = parseGrade(userRes.data?.grade);
     const trackIds: string[] = (tracksRes.data || []).map((t: { track_id: string }) => t.track_id);
     const dismissedIds = new Set((dismissedRes.data || []).map((d: { announcement_id: string }) => d.announcement_id));
 
@@ -460,8 +465,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
     const filtered = (all || []).filter((a: Record<string, unknown>) => {
       if (dismissedIds.has(a.id as string)) return false;
-      const grades = (a.target_grades as string[]) || [];
-      if (grades.length > 0 && !grades.includes(userGrade)) return false;
+      if (!matchesGrade(userGrade, a.target_grades)) return false;
       const tracks = (a.target_tracks as string[]) || [];
       if (tracks.length > 0 && !tracks.some((t) => trackIds.includes(t))) return false;
       return true;
@@ -2450,7 +2454,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     const patch: Record<string, unknown> = {};
     if (body.title       !== undefined) patch.title       = body.title;
     if (body.description !== undefined) patch.description = body.description;
-    if (body.grade       !== undefined) patch.grade       = body.grade;
+    // users.grade is an integer 1 to 12 and the column now enforces it
+    if (body.grade       !== undefined) patch.grade       = parseGrade(body.grade);
     if (body.category    !== undefined) patch.category    = body.category;
     if (body.thumbnail   !== undefined) patch.thumbnail   = body.thumbnail;
     if (body.program     !== undefined) patch.program     = body.program;
