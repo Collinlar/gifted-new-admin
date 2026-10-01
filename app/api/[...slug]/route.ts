@@ -2454,8 +2454,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     const patch: Record<string, unknown> = {};
     if (body.title       !== undefined) patch.title       = body.title;
     if (body.description !== undefined) patch.description = body.description;
-    // users.grade is an integer 1 to 12 and the column now enforces it
-    if (body.grade       !== undefined) patch.grade       = parseGrade(body.grade);
+    // courses.grade is a text[] of every grade the course covers, not a
+    // single integer like users.grade. Passing it through parseGrade would
+    // collapse ["3","4"] to null and wipe the tagging.
+    if (body.grade       !== undefined) patch.grade       = body.grade;
     if (body.category    !== undefined) patch.category    = body.category;
     if (body.thumbnail   !== undefined) patch.thumbnail   = body.thumbnail;
     if (body.program     !== undefined) patch.program     = body.program;
@@ -2548,7 +2550,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.gender           !== undefined) patch.gender            = body.gender;
     if (body.country          !== undefined) patch.country           = body.country;
     if (body.school           !== undefined) patch.school            = body.school;
-    if (body.grade            !== undefined) patch.grade             = body.grade;
+    // users.grade is a single integer 1 to 12 and the column enforces it
+    if (body.grade            !== undefined) patch.grade             = parseGrade(body.grade);
     if (body.category         !== undefined) patch.category          = body.category;
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("users").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
