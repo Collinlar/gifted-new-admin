@@ -66,6 +66,48 @@ function rows(data: Record<string, unknown>[] | null) {
   return (data ?? []).map(cam);
 }
 
+// PostgREST answers with at most 1000 rows and says nothing about the rest.
+// A select that can legitimately match more than that silently returns a
+// prefix, and anything counted from it is quietly wrong: the exam sittings
+// list read 1000 of 1274 candidates and so reported 268 of 338 for a physics
+// paper, 18 submitted where 35 had submitted.
+//
+// Pass a function that builds the query, because each page needs a fresh one.
+//
+//   const all = await fetchAll(() => supabase.from("exam_candidates")
+//     .select("session_id, status").in("session_id", ids));
+const PAGE = 1000;
+async function fetchAll<T = Record<string, unknown>>(
+  build: () => { range: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }> },
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build().range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data?.length) break;
+    out.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
+// `.in(...)` goes into the URL, so a list of a few thousand ids makes a
+// request long enough to be refused. Splitting it is what lets a lookup cover
+// everyone instead of being capped at an arbitrary number and losing the rest.
+async function fetchAllIn<T = Record<string, unknown>>(
+  values: string[],
+  build: (slice: string[]) => PromiseLike<{ data: T[] | null; error: unknown }>,
+  size = 200,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < values.length; i += size) {
+    const { data, error } = await build(values.slice(i, i + size));
+    if (error) throw error;
+    if (data?.length) out.push(...data);
+  }
+  return out;
+}
+
 // Maps an incoming exam payload onto the exams table.
 //
 // The create-quiz form and the bulk importer send slightly different key names
@@ -480,12 +522,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       .from("exam_sessions").select("*").order("created_at", { ascending: false });
 
     const ids = (sessions || []).map((s: { id: string }) => s.id);
-    const { data: cands } = ids.length
-      ? await supabase.from("exam_candidates").select("session_id, status").in("session_id", ids)
-      : { data: [] };
+    // Every candidate across every sitting, which is already past 1000 rows.
+    // Unpaged, this read a prefix and the roll-up under-reported every busy
+    // sitting on the list while the sitting's own page showed the true number.
+    const cands = ids.length
+      ? await fetchAll<{ session_id: string; status: string }>(
+          () => supabase.from("exam_candidates").select("session_id, status").in("session_id", ids))
+      : [];
 
     const roll: Record<string, Record<string, number>> = {};
-    for (const c of (cands || []) as { session_id: string; status: string }[]) {
+    for (const c of cands) {
       roll[c.session_id] ??= { total: 0, pending: 0, in_progress: 0, submitted: 0, disqualified: 0 };
       roll[c.session_id].total++;
       roll[c.session_id][c.status] = (roll[c.session_id][c.status] || 0) + 1;
@@ -505,8 +551,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       .from("exam_sessions").select("*").eq("id", p1).single();
     if (error) return err(error.message);
 
-    const { data: candidates } = await supabase
-      .from("exam_candidates").select("*").eq("session_id", p1).order("full_name");
+    // The roster, the stat tiles and the Export are all built from this, so a
+    // sitting of more than 1000 would quietly lose the tail of its register.
+    const candidates = await fetchAll(
+      () => supabase.from("exam_candidates").select("*").eq("session_id", p1).order("full_name"));
 
     return ok({ session: cam(session), candidates: rows(candidates) });
   }
@@ -827,21 +875,28 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   // GET /exam-session-events/:sessionId — every monitoring event in the sitting
   if (p0 === "exam-session-events" && p1) {
-    const { data: cands } = await supabase
-      .from("exam_candidates").select("id, full_name").eq("session_id", p1);
+    const cands = await fetchAll<{ id: string; full_name: string }>(
+      () => supabase.from("exam_candidates").select("id, full_name").eq("session_id", p1));
 
-    const ids = (cands || []).map((c: { id: string }) => c.id);
-    const nameById = Object.fromEntries(
-      (cands || []).map((c: { id: string; full_name: string }) => [c.id, c.full_name])
-    );
+    const ids = cands.map((c) => c.id);
+    const nameById = Object.fromEntries(cands.map((c) => [c.id, c.full_name]));
 
-    const { data: events } = ids.length
-      ? await supabase.from("exam_events").select("*").in("candidate_id", ids)
-          .order("created_at", { ascending: false }).limit(500)
-      : { data: [] };
+    // exam_events has no session column, so the only way in is by candidate.
+    // A thousand ids in one `.in(...)` is a 37KB URL and gets refused, so the
+    // lookup is chunked. Each chunk returns its own 500 newest, and the real
+    // 500 newest are a subset of that union, so sorting and cutting after the
+    // merge gives the same answer a single query would have.
+    const EVENT_CAP = 500;
+    const collected = await fetchAllIn<Record<string, unknown>>(ids, (slice) =>
+      supabase.from("exam_events").select("*").in("candidate_id", slice)
+        .order("created_at", { ascending: false }).limit(EVENT_CAP));
+
+    const events = collected
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, EVENT_CAP);
 
     return ok({
-      events: (events || []).map((e: Record<string, unknown>) => ({
+      events: events.map((e) => ({
         ...cam(e),
         candidateName: nameById[e.candidate_id as string] || "Unknown",
       })),
@@ -1317,19 +1372,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     let userMap: Record<string, { firstName: string; lastName: string; email: string; school: string }> = {};
 
     if (userMongoIds.length > 0) {
-      const { data: usersData } = await supabase
-        .from("users")
-        .select("mongo_id,first_name,last_name,email,school")
-        .in("mongo_id", userMongoIds.slice(0, 500)); // cap for safety
-      if (usersData) {
-        for (const u of usersData) {
-          userMap[u.mongo_id] = {
-            firstName: u.first_name || "",
-            lastName: u.last_name || "",
-            email: u.email || "",
-            school: u.school || "",
-          };
-        }
+      // Was capped at 500 ids "for safety", which really meant everyone past
+      // the 500th on a leaderboard lost their name and school with no sign
+      // that anything had been left out. The biggest quiz is at 477 today.
+      // Chunking covers all of them and keeps each URL short.
+      type UserRow = { mongo_id: string; first_name?: string; last_name?: string; email?: string; school?: string };
+      const usersData = await fetchAllIn<UserRow>(userMongoIds, (slice) =>
+        supabase.from("users").select("mongo_id,first_name,last_name,email,school").in("mongo_id", slice));
+      for (const u of usersData) {
+        userMap[u.mongo_id] = {
+          firstName: u.first_name || "",
+          lastName: u.last_name || "",
+          email: u.email || "",
+          school: u.school || "",
+        };
       }
     }
 
