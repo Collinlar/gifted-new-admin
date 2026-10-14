@@ -2761,10 +2761,18 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ s
     if (error) return err("This design is in use by issued certificates, so it cannot be deleted. Switch it off instead.");
     return ok({ success: true });
   }
+  // Everything pointing at a candidate cascades, so this goes through
+  // admin_remove_candidate rather than deleting the row directly: it refuses
+  // while a live certificate exists and writes the whole row into the audit
+  // first, so the register can be rebuilt afterwards.
   if (p0 === "delete-candidate" && p1) {
-    const { error } = await supabase.from("exam_candidates").delete().eq("id", p1);
+    const actor = verifyToken(bearerFrom(req))?.email || "unknown";
+    const reason = new URL(req.url).searchParams.get("reason") || null;
+    const { data, error } = await supabase.rpc("admin_remove_candidate", {
+      p_candidate_id: p1, p_actor: actor, p_reason: reason,
+    });
     if (error) return err(error.message);
-    return ok({ success: true });
+    return ok({ success: true, ...(data as Record<string, unknown>) });
   }
 
   if (p0 === "delete-admin") return del("admins");

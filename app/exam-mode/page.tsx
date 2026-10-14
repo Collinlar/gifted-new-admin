@@ -134,6 +134,7 @@ const ACTION_LABEL: Record<string, string> = {
 // Actions that change a candidate's standing or the clock always need a written
 // reason. Benign ones do not, so the requirement stays meaningful.
 const REASON_REQUIRED = new Set([
+  "remove",
   "reset", "disqualify", "reinstate", "extend", "reduce",
   "extend_all", "pause", "unpublish_results", "close",
   "revoke_certificate", "reissue_certificate",
@@ -244,6 +245,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [tab, setTab]               = useState<"candidates" | "certificates" | "activity" | "audit">("candidates");
   const [addOpen, setAddOpen]       = useState(false);
   const [live, setLive]             = useState(true);
+  // With 338 names on a sitting, finding the sixteen people still writing
+  // meant reading the whole table. These two narrow it.
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "in_progress" | "submitted" | "disqualified" | "flagged">("all");
+  const [search, setSearch]         = useState("");
   const [copied, setCopied]         = useState(false);
   const [siteUrl, setSiteUrl]       = useState("");
   const [error, setError]           = useState("");
@@ -284,13 +289,29 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
     return `${siteUrl.replace(/\/$/, "") || "https://your-site"}/exam/${session.sessionCode}`;
   }, [session, siteUrl]);
 
+  // A flagged candidate is defined once so a chip's count and the rows behind
+  // it cannot drift apart.
+  const isFlagged = (c: Candidate) => c.tabSwitches > 0 && c.status !== "submitted";
+
   const stats = useMemo(() => ({
     total:   candidates.length,
+    pending: candidates.filter((c) => c.status === "pending").length,
     writing: candidates.filter((c) => c.status === "in_progress").length,
     done:    candidates.filter((c) => c.status === "submitted").length,
     stopped: candidates.filter((c) => c.status === "disqualified").length,
-    flagged: candidates.filter((c) => c.tabSwitches > 0 && c.status !== "submitted").length,
+    flagged: candidates.filter(isFlagged).length,
   }), [candidates]);
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return candidates.filter((c) => {
+      if (statusFilter === "flagged" ? !isFlagged(c) : statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (!q) return true;
+      return (c.fullName || "").toLowerCase().includes(q)
+          || (c.accessCode || "").toLowerCase().includes(q)
+          || (c.school || "").toLowerCase().includes(q);
+    });
+  }, [candidates, statusFilter, search]);
 
   // Every control funnels through here so nothing reaches the database without
   // an actor and, where it matters, a reason.
@@ -320,6 +341,17 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
         } else if (res.data?.affected) {
           setNotice(`Applied to ${res.data.affected} candidate${res.data.affected === 1 ? "" : "s"}.`);
         }
+      } else if (ask.action === "remove") {
+        // Its own endpoint: this deletes a row rather than changing one, and
+        // the server refuses while a live certificate still points at them.
+        const res = await api.delete(
+          `/delete-candidate/${ask.candidateId}?reason=${encodeURIComponent(reason || "")}`);
+        const who = res.data?.fullName || "That candidate";
+        const n = (res.data?.answerLogRows || 0) + (res.data?.eventRows || 0);
+        setNotice(n > 0
+          ? `${who} is off this sitting, along with ${n} answer and monitoring record${n === 1 ? "" : "s"}. The audit has the full entry.`
+          : `${who} is off this sitting. The audit has the full entry.`);
+        setPanelFor(null);
       } else {
         await api.post("/candidate-action", {
           candidateId: ask.candidateId, action: ask.action, minutes: ask.value ?? 0, reason,
@@ -333,8 +365,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
     }
   };
 
+  // Export and Print follow the filter. The button sits beside it, and
+  // handing back all 338 while the table shows 16 would be a surprise.
   const exportCsv = () => {
-    const ws = XLSX.utils.json_to_sheet(candidates.map((c) => ({
+    const ws = XLSX.utils.json_to_sheet(shown.map((c) => ({
       name: c.fullName, school: c.school || "", grade: c.grade || "",
       access_code: c.accessCode, password: c.passwordPlain,
       status: STATUS_META[c.status].label,
@@ -350,7 +384,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const printSlips = () => {
     const w = window.open("", "_blank");
     if (!w) return;
-    const slips = candidates.map((c) => `
+    const slips = shown.map((c) => `
       <div class="slip">
         <div class="exam">${escapeHtml(session?.title || "")}</div>
         <div class="name">${escapeHtml(c.fullName)}</div>
@@ -587,7 +621,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
 
           {tab === "candidates" && (
             <Card
-              title={`Candidates (${candidates.length})`}
+              title={`Candidates (${shown.length === candidates.length ? candidates.length : `${shown.length} of ${candidates.length}`})`}
               action={
                 <div className="flex items-center gap-2">
                   <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
@@ -601,6 +635,40 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
               }
               padding={false}
             >
+              {/* Narrowing the register. The counts come from the same stats
+                  the tiles above use, so a chip can never promise a number
+                  the table does not then show. */}
+              {candidates.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border bg-surface/40">
+                  {([
+                    ["all",         "Everyone",    stats.total],
+                    ["in_progress", "Writing",     stats.writing],
+                    ["pending",     "Not started", stats.pending],
+                    ["submitted",   "Submitted",   stats.done],
+                    ["disqualified","Stopped",     stats.stopped],
+                    ["flagged",     "Flagged",     stats.flagged],
+                  ] as const).map(([key, label, n]) => (
+                    <button
+                      key={key}
+                      onClick={() => setStatusFilter(key)}
+                      className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+                        statusFilter === key
+                          ? "bg-primary text-white border-primary"
+                          : "bg-white text-muted border-border hover:text-ink hover:border-primary/40"
+                      }`}
+                    >
+                      {label} <span className={statusFilter === key ? "opacity-80" : "text-subtle"}>{n}</span>
+                    </button>
+                  ))}
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Find a name, access code or school"
+                    className="ml-auto text-xs px-3 py-1.5 rounded-lg border border-border bg-white min-w-[220px] focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary"
+                  />
+                </div>
+              )}
+
               {candidates.length === 0 ? (
                 <div className="py-14 text-center">
                   <Users size={28} className="text-subtle mx-auto mb-3" />
@@ -620,12 +688,22 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                       </tr>
                     </thead>
                     <tbody>
-                      {candidates.map((c) => (
+                      {shown.map((c) => (
                         <CandidateRow key={c.id} c={c} session={session} paused={paused}
                           onOpen={() => setPanelFor(c)} />
                       ))}
                     </tbody>
                   </table>
+
+                  {shown.length === 0 && (
+                    <div className="py-12 text-center">
+                      <p className="text-muted text-sm">Nobody here matches that.</p>
+                      <Button size="sm" variant="secondary" className="mt-3"
+                        onClick={() => { setStatusFilter("all"); setSearch(""); }}>
+                        Show everyone
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
@@ -789,6 +867,11 @@ const CONTROLS: ControlDef[] = [
   {
     action: "reset", label: "Reset to a clean start", tone: "danger",
     help: "Wipes every answer, the clock and the device lock so they begin again from nothing. Their old answers cannot be recovered.",
+    show: () => true,
+  },
+  {
+    action: "remove", label: "Take them off this sitting", tone: "danger",
+    help: "For somebody entered on the wrong paper. They disappear from the register along with their answers and their invigilation record. The removal is kept in the audit with the full entry, so it can be read back.",
     show: () => true,
   },
 ];
