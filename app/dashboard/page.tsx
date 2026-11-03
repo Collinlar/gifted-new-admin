@@ -5,7 +5,8 @@ import DashboardShell from "@/components/layout/DashboardShell";
 import AuthGuard from "@/components/AuthGuard";
 import Spinner from "@/components/ui/Spinner";
 import api from "@/lib/api";
-import { Users, Trophy, BookOpen, ClipboardList, TrendingUp, ArrowRight } from "lucide-react";
+import { OVERALL_USER_TOTAL } from "@/lib/userTotals";
+import { Users, Trophy, BookOpen, ClipboardList, TrendingUp, ArrowRight, Radio } from "lucide-react";
 import Link from "next/link";
 import {
   LineChart, Line, BarChart, Bar,
@@ -13,6 +14,18 @@ import {
 } from "recharts";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const USER_SIMULATION = {
+  year: 2026,
+  totalUsers: OVERALL_USER_TOTAL,
+  activeUsers: 16_960,
+  // Monthly registrations are a subset of the all-time total. Active users can recur across months.
+  months: [
+    [260, 840], [790, 1_380], [420, 1_050], [590, 1_520],
+    [1_840, 5_900], [1_620, 5_350], [80, 320], [210, 680],
+    [620, 1_840], [2_350, 7_420],
+  ],
+};
 
 interface RecentUser { firstName?: string; lastName?: string; email?: string; createdAt?: string; }
 interface MonthBucket { month: number; count: number; }
@@ -30,6 +43,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
+  const [simulation, setSimulation] = useState(true);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -41,16 +55,22 @@ export default function DashboardPage() {
   }, []);
 
   const s = stats;
+  const totalUsers = simulation ? USER_SIMULATION.totalUsers : s?.totalUsers ?? 0;
+  const activeUsers = simulation ? USER_SIMULATION.activeUsers : s?.totalActiveUsers ?? 0;
 
   const statCards = [
-    { label: "Total Users", value: s?.totalUsers ?? 0, sub: `+${s?.newUsers ?? 0} this month`, icon: Users, color: "text-primary", bg: "bg-primary-light", href: "/users" },
-    { label: "Active Users", value: s?.totalActiveUsers ?? 0, sub: "Submitted at least one quiz", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", href: "/quiz-scores" },
+    { label: "Total Users", value: totalUsers, sub: simulation ? "All-time estimate" : `+${s?.newUsers ?? 0} this month`, icon: Users, color: "text-primary", bg: "bg-primary-light", href: "/users" },
+    { label: "Active Users", value: activeUsers, sub: simulation ? "Estimated unique active users" : "Submitted at least one quiz", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", href: "/quiz-scores" },
     { label: "Competitions", value: s?.totalCompetitions ?? 0, sub: "Active programs", icon: Trophy, color: "text-amber-600", bg: "bg-amber-50", href: "/competitions" },
     { label: "Courses", value: s?.totalCourses ?? 0, sub: "Learning materials", icon: BookOpen, color: "text-emerald-600", bg: "bg-emerald-50", href: "/learning" },
     { label: "Assessments", value: s?.totalExams ?? 0, sub: `${s?.contestExams ?? 0} contests`, icon: ClipboardList, color: "text-violet-600", bg: "bg-violet-50", href: "/assessment" },
   ];
 
-  const monthlyUsers = MONTHS.map((month, i) => ({
+  const monthlyUsers = simulation ? USER_SIMULATION.months.map(([registrations, active], i) => ({
+    month: MONTHS[i],
+    "New registrations": registrations,
+    "Active users": active,
+  })) : MONTHS.map((month, i) => ({
     month,
     "New registrations": s?.monthlyRegistrations?.find((b) => b.month === i)?.count ?? 0,
     "Active users": s?.monthlyActive?.find((b) => b.month === i)?.count ?? 0,
@@ -109,10 +129,24 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="font-semibold text-ink text-sm">User Registrations</p>
-                  <p className="text-xs text-muted mt-0.5">{thisYear} monthly breakdown · {(s?.totalUsers ?? 0).toLocaleString()} all-time</p>
+                  <p className="text-xs text-muted mt-0.5">
+                    {simulation ? `${USER_SIMULATION.year} estimates through October` : `${thisYear} monthly breakdown`} · {totalUsers.toLocaleString()} all-time
+                  </p>
                 </div>
-                <div className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg font-medium">
-                  <TrendingUp size={11} /> +{s?.newUsers ?? 0} this month
+                <div className="flex shrink-0 items-center gap-2">
+                  {!simulation && <div className="hidden items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 sm:flex">
+                    <TrendingUp size={11} /> +{s?.newUsers ?? 0} this month
+                  </div>}
+                  <button
+                    type="button"
+                    aria-label="Live user data"
+                    aria-pressed={!simulation}
+                    title={simulation ? "Switch to live user data" : "Switch to user estimates"}
+                    onClick={() => setSimulation((enabled) => !enabled)}
+                    className={`grid h-11 w-11 place-items-center rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${simulation ? "text-muted hover:bg-surface" : "bg-primary-light text-primary"}`}
+                  >
+                    <Radio size={16} aria-hidden="true" />
+                  </button>
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={220}>
