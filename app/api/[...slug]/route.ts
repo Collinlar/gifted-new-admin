@@ -2117,8 +2117,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   // Students then read stored text — zero runtime AI calls.
   if (p0 === "generate-practice-content" && slug[1]) {
     const examId = slug[1];
-    const GROQ_KEY = process.env.GROQ_API_KEY;
-    if (!GROQ_KEY) return err("GROQ_API_KEY not configured on server");
+    const GROQ_KEY = process.env.GROQ_API_KEY?.trim();
+    if (!GROQ_KEY) return err("Practice generation needs GROQ_API_KEY in the server environment.", 503);
 
     const { data: examRow, error: fetchErr } = await supabase
       .from("exams")
@@ -2131,21 +2131,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     if (questions.length === 0) return ok({ generated: 0, skipped: 0 });
 
     const GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions";
-    const GROQ_MODEL = "llama-3.3-70b-versatile";
+    const GROQ_MODEL = "openai/gpt-oss-120b";
 
     async function groq(system: string, user: string): Promise<string> {
       const res = await fetch(GROQ_URL, {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
         body: JSON.stringify({
           model: GROQ_MODEL,
-          max_tokens: 250,
+          max_completion_tokens: 1024,
+          reasoning_effort: "low",
           messages: [{ role: "system", content: system }, { role: "user", content: user }],
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (res.status === 401 || res.status === 403) {
+        throw new Error("Groq rejected the server key or denied access to the generation model.");
+      }
+      if (res.status === 429) throw new Error("Groq reached its request limit. Try generating again shortly.");
+      if (!res.ok) throw new Error(`Groq could not generate practice content (HTTP ${res.status}).`);
       const d = await res.json() as { choices?: { message?: { content?: string } }[] };
-      return d.choices?.[0]?.message?.content?.trim() || "";
+      const content = d.choices?.[0]?.message?.content?.trim();
+      if (!content) throw new Error("Groq returned no practice content. Try generating again.");
+      return content;
     }
 
     const EXPLANATION_SYSTEM = `You write short explanations for school exam questions for students in Africa.
@@ -2156,6 +2164,7 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
 
     let generated = 0;
     let skipped   = 0;
+    let generationError: string | undefined;
 
     const enriched = await Promise.all(
       questions.map(async (q) => {
@@ -2192,14 +2201,18 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
               `Question: ${questionText}\nOptions:\n${optLines}\n\nWrite a hint.`
             );
           }
-          generated++;
-        } catch {
-          skipped++;
+        } catch (error) {
+          generationError ??= error instanceof Error ? error.message : "Groq could not generate practice content.";
         }
 
+        if (Object.keys(updates).length > 0) generated++;
+        else skipped++;
         return { ...q, ...updates };
       })
     );
+
+    if (generated === 0 && generationError) return err(generationError, 502);
+    if (generated === 0) return ok({ success: true, generated, skipped, total: questions.length });
 
     const { error: updateErr } = await supabase
       .from("exams")
