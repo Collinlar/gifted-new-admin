@@ -2128,8 +2128,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     if (fetchErr || !examRow) return err("Exam not found");
 
     const questions: Record<string, unknown>[] = Array.isArray(examRow.questions) ? examRow.questions : [];
-    if (questions.length === 0) return ok({ generated: 0, skipped: 0 });
-
     const GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions";
     const GROQ_MODEL = "openai/gpt-oss-120b";
 
@@ -2162,8 +2160,7 @@ Rules: Explain why the correct answer is right in 2 to 3 sentences. Plain, direc
     const HINT_SYSTEM = `You write hints for school exam questions for students in Africa.
 Rules: Never reveal the correct answer or its letter. Lead the student toward the right reasoning with a guiding question or key concept. Maximum 2 sentences. Plain English for secondary school level. Do not use em dashes. Do not start with "Think about" every time. Your output must not contain em dashes.`;
 
-    let generated = 0;
-    let skipped   = 0;
+    const summary = { hintsGenerated: 0, explanationsGenerated: 0, hintsMissing: 0, explanationsMissing: 0 };
     let generationError: string | undefined;
 
     const enriched = await Promise.all(
@@ -2172,11 +2169,11 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
           ? (q.answers as string[])
           : Array.isArray(q.options) ? (q.options as string[]) : [];
 
-        const correctStr = (q.correctAnswer ?? q.correct_answer ?? "") as string;
+        const correctStr = q.correctAnswer ?? q.correct_answer ?? q.correct ?? q.answer ?? "";
         const correctIdx = typeof correctStr === "number"
           ? correctStr
           : opts.findIndex((o) => String(o) === String(correctStr));
-        const correctOption = opts[correctIdx as number] ?? "";
+        const correctOption = opts[correctIdx] ?? "";
 
         const optLines = opts.map((o, i) => `${String.fromCharCode(65 + i)}. ${o}`).join("\n");
         const questionText = String(q.question || "");
@@ -2184,35 +2181,40 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
         const needsExplanation = !q.explanation || String(q.explanation).trim() === "";
         const needsHint        = !q.hint        || String(q.hint).trim()        === "";
 
-        if (!needsExplanation && !needsHint) { skipped++; return q; }
-
         const updates: Record<string, unknown> = {};
+        const prompt = `Question: ${questionText}\nOptions:\n${optLines}`;
+        const attempt = async (system: string, user: string) => {
+          try {
+            return await groq(system, user);
+          } catch (error) {
+            generationError ??= error instanceof Error ? error.message : "Groq could not generate practice content.";
+            return null;
+          }
+        };
 
-        try {
-          if (needsExplanation && correctOption) {
-            updates.explanation = await groq(
-              EXPLANATION_SYSTEM,
-              `Question: ${questionText}\nOptions:\n${optLines}\nCorrect answer: ${correctOption}\n\nWrite the explanation.`
-            );
-          }
-          if (needsHint) {
-            updates.hint = await groq(
-              HINT_SYSTEM,
-              `Question: ${questionText}\nOptions:\n${optLines}\n\nWrite a hint.`
-            );
-          }
-        } catch (error) {
-          generationError ??= error instanceof Error ? error.message : "Groq could not generate practice content.";
+        if (needsHint) {
+          const hint = await attempt(HINT_SYSTEM, `${prompt}\n\nWrite a hint.`);
+          if (hint) {
+            updates.hint = hint;
+            summary.hintsGenerated++;
+          } else summary.hintsMissing++;
+        }
+        if (needsExplanation) {
+          const explanation = correctOption
+            ? await attempt(EXPLANATION_SYSTEM, `${prompt}\nCorrect answer: ${correctOption}\n\nWrite the explanation.`)
+            : null;
+          if (explanation) {
+            updates.explanation = explanation;
+            summary.explanationsGenerated++;
+          } else summary.explanationsMissing++;
         }
 
-        if (Object.keys(updates).length > 0) generated++;
-        else skipped++;
         return { ...q, ...updates };
       })
     );
 
-    if (generated === 0 && generationError) return err(generationError, 502);
-    if (generated === 0) return ok({ success: true, generated, skipped, total: questions.length });
+    const result = { ...summary, warning: generationError };
+    if (!summary.hintsGenerated && !summary.explanationsGenerated) return ok(result);
 
     const { error: updateErr } = await supabase
       .from("exams")
@@ -2220,7 +2222,7 @@ Rules: Never reveal the correct answer or its letter. Lead the student toward th
       .or(`id.eq.${examId},mongo_id.eq.${examId}`);
 
     if (updateErr) return err(updateErr.message);
-    return ok({ success: true, generated, skipped, total: questions.length });
+    return ok(result);
   }
 
   return err("Not found", 404);

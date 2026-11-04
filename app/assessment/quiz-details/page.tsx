@@ -67,7 +67,10 @@ export default function QuizDetailsPage() {
   const [saving, setSaving] = useState(false);
 
   const [generatingAI, setGeneratingAI] = useState(false);
-  const [aiResult, setAiResult] = useState<{ generated: number; skipped: number; total: number } | null>(null);
+  const [aiResult, setAiResult] = useState<{
+    hintsGenerated: number; explanationsGenerated: number;
+    hintsMissing: number; explanationsMissing: number; warning?: string;
+  } | null>(null);
 
   const [editingQ, setEditingQ] = useState<number | null>(null);
   const [qForm, setQForm] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "" });
@@ -202,7 +205,7 @@ export default function QuizDetailsPage() {
 
   const generateAIContent = async () => {
     if (!quiz) return;
-    if (!confirm(`Generate AI explanations and hints for all ${quiz.questions?.length ?? 0} questions that are missing them? This runs once and stores the content — students will not trigger API calls during practice.`)) return;
+    if (!confirm("Generate and save any missing hints and explanations for this quiz?")) return;
     setGeneratingAI(true);
     setAiResult(null);
     try {
@@ -428,8 +431,10 @@ export default function QuizDetailsPage() {
             {aiResult && (
               <div className="mb-4 px-4 py-3 rounded-xl bg-teal-50 border border-teal-200 text-sm text-teal-800 flex items-center justify-between">
                 <span>
-                  <strong>{aiResult.generated}</strong> questions enriched with AI explanations and hints.
-                  {aiResult.skipped > 0 && <> <span className="text-teal-600">{aiResult.skipped} already had content and were left unchanged.</span></>}
+                  Saved <strong>{aiResult.hintsGenerated}</strong> hints and <strong>{aiResult.explanationsGenerated}</strong> explanations.
+                  {(aiResult.hintsMissing > 0 || aiResult.explanationsMissing > 0) && (
+                    <span className="block mt-1">Still missing {aiResult.hintsMissing} hints and {aiResult.explanationsMissing} explanations. {aiResult.warning}</span>
+                  )}
                 </span>
                 <button onClick={() => setAiResult(null)} className="text-teal-500 hover:text-teal-700 ml-4"><X size={14} /></button>
               </div>
@@ -510,6 +515,11 @@ export default function QuizDetailsPage() {
                       ))}
                       {q.explanation && (
                         <p className="text-xs text-muted mt-2 pt-2 border-t border-border italic">{q.explanation}</p>
+                      )}
+                      {q.hint && (
+                        <p className="text-sm text-amber-800 mt-2 pt-2 border-t border-border">
+                          <strong>Hint</strong> {q.hint}
+                        </p>
                       )}
                     </div>
                   )}
