@@ -18,7 +18,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const USER_SIMULATION = {
   year: 2026,
   totalUsers: OVERALL_USER_TOTAL,
-  activeUsers: 16_960,
+  activeUsers: 19_460,
   // Monthly registrations are a subset of the all-time total. Active users can recur across months.
   months: [
     [95, 840], [1_100, 1_380], [100, 1_050], [165, 1_520],
