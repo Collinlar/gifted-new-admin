@@ -1,3 +1,4 @@
+import { validatePaperRows } from "@/lib/paperResults";
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { issueToken, verifyToken, bearerFrom } from "@/lib/adminToken";
@@ -1797,6 +1798,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       return err(error.message);
     }
     return ok({ session: cam(data) });
+  }
+
+  // Both review and commit revalidate on the server; SQL applies the batch atomically.
+  if (p0 === "import-paper-results") {
+    if (!body.sessionId || !/^[0-9a-f-]{36}$/i.test(body.sessionId)) return err("Choose a valid sitting.");
+    const validation = validatePaperRows(body.rows);
+    if (validation) return err(validation);
+    const { data, error } = await supabase.rpc("admin_import_paper_results", {
+      p_session_id: body.sessionId, p_rows: body.rows, p_actor: actorFrom(req),
+      p_filename: String(body.filename || "").slice(0, 255), p_commit: body.commit === true,
+      p_review: typeof body.review === "string" ? body.review : null,
+      p_correct: body.correct === true, p_reason: String(body.reason || "").slice(0, 2000),
+    });
+    if (error) return err(error.message);
+    return ok(data);
   }
 
   // POST /generate-candidates — bulk credential issue

@@ -7,7 +7,6 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import api from "@/lib/api";
-import { OVERALL_USER_TOTAL } from "@/lib/userTotals";
 import { Search, Download, Eye, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useRouter } from "next/navigation";
@@ -184,7 +183,6 @@ export default function UsersPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const hasFilters = !!(search || category || gender || grade || purpose);
-  const headlineTotal = hasFilters ? total : OVERALL_USER_TOTAL;
 
   const handleDownload = () => {
     const exportRows = users.map((u, i) => ({
@@ -223,7 +221,7 @@ export default function UsersPage() {
     <AuthGuard>
       <DashboardShell title="All Users">
         <Card
-          title={`${headlineTotal.toLocaleString()} user${headlineTotal !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
+          title={`${total.toLocaleString()} user${total !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           padding={false}
           action={
             <div className="flex items-center gap-2 flex-wrap">
@@ -331,7 +329,6 @@ export default function UsersPage() {
                 <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                   <p className="text-sm text-muted">
                     {start.toLocaleString()}–{end.toLocaleString()} of {total.toLocaleString()} users
-                    {!hasFilters && ` listed · ${OVERALL_USER_TOTAL.toLocaleString()} users overall`}
                   </p>
                   <div className="flex items-center gap-1">
                     <button

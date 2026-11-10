@@ -8,6 +8,7 @@
 
 # testing
 /coverage
+/.tmp-paper-tests/
 
 # next.js
 /.next/

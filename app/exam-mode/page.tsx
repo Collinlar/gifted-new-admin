@@ -9,6 +9,7 @@ import Input from "@/components/ui/Input";
 import Spinner from "@/components/ui/Spinner";
 import SlidePanel from "@/components/ui/SlidePanel";
 import api from "@/lib/api";
+import PaperResultsImport from "@/components/PaperResultsImport";
 import * as XLSX from "xlsx";
 import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
@@ -64,6 +65,8 @@ interface Candidate {
   startedAt?: string; expiresAt?: string; submittedAt?: string;
   score?: number; totalQuestions?: number; tabSwitches: number;
   lastSeenAt?: string;
+  entrySource?: "online" | "paper"; candidateReference?: string;
+  importedAt?: string; importedBy?: string; importBatchId?: string;
 }
 
 interface AuditEntry {
@@ -109,6 +112,9 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 const ACTION_LABEL: Record<string, string> = {
+  "session.import_paper_results": "Imported paper results",
+  "candidate.paper_import": "Imported paper result",
+  "candidate.paper_correction": "Corrected paper result",
   "candidate.release":        "Released the device lock",
   "candidate.extend":         "Added time",
   "candidate.reduce":         "Removed time",
@@ -244,6 +250,8 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [loading, setLoading]       = useState(true);
   const [tab, setTab]               = useState<"candidates" | "certificates" | "activity" | "audit">("candidates");
   const [addOpen, setAddOpen]       = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [live, setLive]             = useState(true);
   // With 338 names on a sitting, finding the sixteen people still writing
   // meant reading the whole table. These two narrow it.
@@ -295,6 +303,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
 
   const stats = useMemo(() => ({
     total:   candidates.length,
+    paper: candidates.filter(c => c.entrySource === "paper").length,
     pending: candidates.filter((c) => c.status === "pending").length,
     writing: candidates.filter((c) => c.status === "in_progress").length,
     done:    candidates.filter((c) => c.status === "submitted").length,
@@ -305,13 +314,15 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
     return candidates.filter((c) => {
+      if (sourceFilter !== "all" && (c.entrySource || "online") !== sourceFilter) return false;
       if (statusFilter === "flagged" ? !isFlagged(c) : statusFilter !== "all" && c.status !== statusFilter) return false;
       if (!q) return true;
       return (c.fullName || "").toLowerCase().includes(q)
           || (c.accessCode || "").toLowerCase().includes(q)
+          || (c.candidateReference || "").toLowerCase().includes(q)
           || (c.school || "").toLowerCase().includes(q);
     });
-  }, [candidates, statusFilter, search]);
+  }, [candidates, statusFilter, search, sourceFilter]);
 
   // Every control funnels through here so nothing reaches the database without
   // an actor and, where it matters, a reason.
@@ -371,6 +382,9 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
     const ws = XLSX.utils.json_to_sheet(shown.map((c) => ({
       name: c.fullName, school: c.school || "", grade: c.grade || "",
       access_code: c.accessCode, password: c.passwordPlain,
+      source: c.entrySource === "paper" ? "Paper-based" : "Online",
+      candidate_reference: c.candidateReference || c.accessCode,
+      import_batch: c.importBatchId || "", imported_by: c.importedBy || "", imported_at: fmt(c.importedAt),
       status: STATUS_META[c.status].label,
       score: c.score ?? "", out_of: c.totalQuestions ?? "",
       started: fmt(c.startedAt), submitted: fmt(c.submittedAt),
@@ -621,15 +635,17 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
 
           {tab === "candidates" && (
             <Card
+              className="[&>div:first-child]:flex-wrap [&>div:first-child]:gap-3"
               title={`Candidates (${shown.length === candidates.length ? candidates.length : `${shown.length} of ${candidates.length}`})`}
               action={
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
                     <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} /> Auto refresh
                   </label>
                   <Button size="sm" variant="ghost" onClick={load}><RefreshCw size={13} /></Button>
                   <Button size="sm" variant="secondary" onClick={exportCsv}><Download size={13} /> Export</Button>
                   <Button size="sm" variant="secondary" onClick={printSlips}><Printer size={13} /> Print slips</Button>
+                  <Button size="sm" variant="secondary" onClick={() => setImportOpen(true)}>Import paper results</Button>
                   <Button size="sm" onClick={() => setAddOpen(true)}><Plus size={13} /> Add candidates</Button>
                 </div>
               }
@@ -660,6 +676,13 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                       {label} <span className={statusFilter === key ? "opacity-80" : "text-subtle"}>{n}</span>
                     </button>
                   ))}
+                  <label className="text-sm">Source
+                    <select className="ml-2 border rounded p-2" value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}>
+                      <option value="all">All ({stats.total})</option>
+                      <option value="online">Online ({stats.total - stats.paper})</option>
+                      <option value="paper">Paper-based ({stats.paper})</option>
+                    </select>
+                  </label>
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
@@ -699,7 +722,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                     <div className="py-12 text-center">
                       <p className="text-muted text-sm">Nobody here matches that.</p>
                       <Button size="sm" variant="secondary" className="mt-3"
-                        onClick={() => { setStatusFilter("all"); setSearch(""); }}>
+                        onClick={() => { setStatusFilter("all"); setSearch(""); setSourceFilter("all"); }}>
                         Show everyone
                       </Button>
                     </div>
@@ -717,6 +740,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           {tab === "audit"    && <AuditTab sessionId={sessionId} />}
         </div>
 
+        {importOpen && <PaperResultsImport sessionId={sessionId} published={!!session?.resultsPublishedAt}
+          onClose={() => setImportOpen(false)} onSaved={message => {
+            setImportOpen(false); setNotice(message); setCertVersion(v => v + 1); load();
+          }} />}
         <AddCandidatesPanel open={addOpen} sessionId={sessionId}
           onClose={() => setAddOpen(false)} onAdded={() => { setAddOpen(false); load(); }} />
 
@@ -787,6 +814,7 @@ function CandidateRow({ c, session, paused, onOpen }: {
       className="border-b border-border last:border-0 hover:bg-surface/60 cursor-pointer transition-colors">
       <td className="px-4 py-2.5">
         <p className="font-medium text-ink">{c.fullName}</p>
+        <p className="text-xs text-muted">{c.entrySource === "paper" ? `Paper-based · ${c.candidateReference}` : "Online"}</p>
         {(c.school || c.grade) && (
           <p className="text-xs text-muted">{[c.school, c.grade && `Grade ${c.grade}`].filter(Boolean).join(" · ")}</p>
         )}
@@ -904,6 +932,12 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           )}
         </div>
 
+        {c.entrySource === "paper" && <div className="text-sm bg-surface p-3 space-y-1">
+          <p>Paper-based result · {c.candidateReference}</p>
+          <p>Imported {fmt(c.importedAt)} by {c.importedBy}</p>
+          <p>Batch: {c.importBatchId}</p>
+          <p>To correct marks, upload the same candidate reference through Import paper results.</p>
+        </div>}
         {/* Credentials */}
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-surface border border-border rounded-lg px-3 py-2">
@@ -925,7 +959,7 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
         </div>
 
         {/* Invigilation state */}
-        <div className={`rounded-xl px-3 py-2.5 border flex items-start gap-2 ${
+        {c.entrySource !== "paper" && <div className={`rounded-xl px-3 py-2.5 border flex items-start gap-2 ${
           overLimit ? "bg-red-50 border-red-200"
             : c.tabSwitches > 0 ? "bg-amber-50 border-amber-200"
             : "bg-emerald-50 border-emerald-200"
@@ -949,11 +983,11 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
                   : `The limit for this sitting is ${maxTabs}.`}
             </p>
           </div>
-        </div>
+        </div>}
 
-        <Button variant="secondary" onClick={onTranscript} className="w-full">
+        {c.entrySource !== "paper" && <Button variant="secondary" onClick={onTranscript} className="w-full">
           <FileText size={14} /> Open the full transcript
-        </Button>
+        </Button>}
 
         {/* Controls */}
         <div className="border-t border-border pt-4">
@@ -963,7 +997,7 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           </p>
 
           <div className="space-y-2">
-            {CONTROLS.filter((ctl) => ctl.show(c)).map((ctl) => (
+            {CONTROLS.filter((ctl) => ctl.show(c) && (c.entrySource !== "paper" || ctl.action === "remove")).map((ctl) => (
               <button
                 key={ctl.action}
                 onClick={() => onRequest(ctl.label, ctl.action, "candidate", {
