@@ -67,6 +67,7 @@ interface Candidate {
   lastSeenAt?: string;
   entrySource?: "online" | "paper"; candidateReference?: string;
   importedAt?: string; importedBy?: string; importBatchId?: string;
+  userId?: string; accountLinkedAt?: string; accountLinkMethod?: string;
 }
 
 interface AuditEntry {
@@ -112,6 +113,8 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 const ACTION_LABEL: Record<string, string> = {
+  "candidate.claim_account": "Saved exam to Gifted account",
+  "candidate.unlink_account": "Removed Gifted account link",
   "session.import_paper_results": "Imported paper results",
   "candidate.paper_import": "Imported paper result",
   "candidate.paper_correction": "Corrected paper result",
@@ -140,6 +143,7 @@ const ACTION_LABEL: Record<string, string> = {
 // Actions that change a candidate's standing or the clock always need a written
 // reason. Benign ones do not, so the requirement stays meaningful.
 const REASON_REQUIRED = new Set([
+  "unlink_account",
   "remove",
   "reset", "disqualify", "reinstate", "extend", "reduce",
   "extend_all", "pause", "unpublish_results", "close",
@@ -367,6 +371,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
         await api.post("/candidate-action", {
           candidateId: ask.candidateId, action: ask.action, minutes: ask.value ?? 0, reason,
         });
+        if (ask.action === "unlink_account") setNotice("Account link removed and exam password replaced. Print a fresh slip and give it only to the verified candidate.");
       }
       setAsk(null);
       load();
@@ -385,6 +390,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
       source: c.entrySource === "paper" ? "Paper-based" : "Online",
       candidate_reference: c.candidateReference || c.accessCode,
       import_batch: c.importBatchId || "", imported_by: c.importedBy || "", imported_at: fmt(c.importedAt),
+      account_linked: c.userId ? "Yes" : "No", account_linked_at: fmt(c.accountLinkedAt),
       status: STATUS_META[c.status].label,
       score: c.score ?? "", out_of: c.totalQuestions ?? "",
       started: fmt(c.startedAt), submitted: fmt(c.submittedAt),
@@ -815,6 +821,7 @@ function CandidateRow({ c, session, paused, onOpen }: {
       <td className="px-4 py-2.5">
         <p className="font-medium text-ink">{c.fullName}</p>
         <p className="text-xs text-muted">{c.entrySource === "paper" ? `Paper-based · ${c.candidateReference}` : "Online"}</p>
+        {c.userId && <p className="text-xs text-emerald-700">Gifted account linked</p>}
         {(c.school || c.grade) && (
           <p className="text-xs text-muted">{[c.school, c.grade && `Grade ${c.grade}`].filter(Boolean).join(" · ")}</p>
         )}
@@ -867,6 +874,11 @@ interface ControlDef {
 }
 
 const CONTROLS: ControlDef[] = [
+  {
+    action: "unlink_account", label: "Remove Gifted account link", tone: "danger",
+    help: "Use after verifying a mistaken claim. Replaces the exam password; print a fresh slip for the rightful candidate to link their account.",
+    show: (c) => !!c.userId && (c.status === "submitted" || c.status === "disqualified"),
+  },
   {
     action: "release", label: "Release the device lock",
     help: "Lets them sign in from a different machine. Use this when a laptop fails and they move to a spare.",
@@ -939,6 +951,13 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           <p>To correct marks, upload the same candidate reference through Import paper results.</p>
         </div>}
         {/* Credentials */}
+        <div className="text-sm border border-border rounded-lg p-3">
+          <p className="font-medium">{c.userId ? "Gifted account linked" : "No Gifted account linked"}</p>
+          {c.userId && <>
+            <p className="break-all text-muted">Account: {c.userId}</p>
+            <p className="text-muted">{c.accountLinkedAt ? `Linked ${fmt(c.accountLinkedAt)}` : "Linked through an existing registration"}</p>
+          </>}
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-surface border border-border rounded-lg px-3 py-2">
             <p className="text-xs text-muted mb-0.5">Access code</p>
@@ -997,7 +1016,7 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           </p>
 
           <div className="space-y-2">
-            {CONTROLS.filter((ctl) => ctl.show(c) && (c.entrySource !== "paper" || ctl.action === "remove")).map((ctl) => (
+            {CONTROLS.filter((ctl) => ctl.show(c) && (c.entrySource !== "paper" || ["remove", "unlink_account"].includes(ctl.action))).map((ctl) => (
               <button
                 key={ctl.action}
                 onClick={() => onRequest(ctl.label, ctl.action, "candidate", {

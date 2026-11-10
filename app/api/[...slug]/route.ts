@@ -1831,6 +1831,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   // POST /candidate-action — invigilator controls on one candidate
   if (p0 === "candidate-action") {
+    if (body.action === "unlink_account") {
+      const { data, error } = await supabase.rpc("admin_unlink_exam_account", {
+        p_candidate_id: body.candidateId, p_actor: actorFrom(req), p_reason: body.reason || null,
+      });
+      if (error) return err(error.message);
+      return ok(data);
+    }
     const { error } = await supabase.rpc("admin_candidate_action", {
       p_candidate_id: body.candidateId,
       p_action: body.action,
