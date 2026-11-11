@@ -68,6 +68,9 @@ interface Candidate {
   entrySource?: "online" | "paper"; candidateReference?: string;
   importedAt?: string; importedBy?: string; importBatchId?: string;
   userId?: string; accountLinkedAt?: string; accountLinkMethod?: string;
+  timedOut?: boolean; includeInResults?: boolean; resultDecidedAt?: string;
+  resultDecidedBy?: string; resultDecisionReason?: string;
+  reviewScoredAt?: string;
 }
 
 interface AuditEntry {
@@ -113,6 +116,9 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 const ACTION_LABEL: Record<string, string> = {
+  "candidate.disqualified_review_score": "Scored stopped attempt for admin review",
+  "candidate.timeout": "Time elapsed, saved answers scored",
+  "candidate.result_inclusion": "Changed result inclusion",
   "candidate.claim_account": "Saved exam to Gifted account",
   "candidate.unlink_account": "Removed Gifted account link",
   "session.import_paper_results": "Imported paper results",
@@ -143,6 +149,7 @@ const ACTION_LABEL: Record<string, string> = {
 // Actions that change a candidate's standing or the clock always need a written
 // reason. Benign ones do not, so the requirement stays meaningful.
 const REASON_REQUIRED = new Set([
+  "include_timeout", "exclude_timeout",
   "unlink_account",
   "remove",
   "reset", "disqualify", "reinstate", "extend", "reduce",
@@ -256,6 +263,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const [addOpen, setAddOpen]       = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [resultFilter, setResultFilter] = useState("all");
   const [live, setLive]             = useState(true);
   // With 338 names on a sitting, finding the sixteen people still writing
   // meant reading the whole table. These two narrow it.
@@ -285,7 +293,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
       const res = await api.get(`/exam-session/${sessionId}`);
       setSession(res.data.session);
       setCandidates(res.data.candidates || []);
-    } catch { /* keep last known state */ }
+    } catch (e) { setError(serverMessage(e, "Could not refresh this sitting or finalize expired attempts.")); }
     finally { setLoading(false); }
   }, [sessionId]);
 
@@ -308,6 +316,9 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const stats = useMemo(() => ({
     total:   candidates.length,
     paper: candidates.filter(c => c.entrySource === "paper").length,
+    timedOut: candidates.filter(c => c.timedOut).length,
+    excluded: candidates.filter(c => c.includeInResults === false).length,
+    included: candidates.filter(c => c.status === "submitted" && c.includeInResults !== false).length,
     pending: candidates.filter((c) => c.status === "pending").length,
     writing: candidates.filter((c) => c.status === "in_progress").length,
     done:    candidates.filter((c) => c.status === "submitted").length,
@@ -318,6 +329,9 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
     return candidates.filter((c) => {
+      if (resultFilter === "timed_out" && !c.timedOut) return false;
+      if (resultFilter === "excluded" && c.includeInResults !== false) return false;
+      if (resultFilter === "included" && (c.status !== "submitted" || c.includeInResults === false)) return false;
       if (sourceFilter !== "all" && (c.entrySource || "online") !== sourceFilter) return false;
       if (statusFilter === "flagged" ? !isFlagged(c) : statusFilter !== "all" && c.status !== statusFilter) return false;
       if (!q) return true;
@@ -326,7 +340,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           || (c.candidateReference || "").toLowerCase().includes(q)
           || (c.school || "").toLowerCase().includes(q);
     });
-  }, [candidates, statusFilter, search, sourceFilter]);
+  }, [candidates, statusFilter, search, sourceFilter, resultFilter]);
 
   // Every control funnels through here so nothing reaches the database without
   // an actor and, where it matters, a reason.
@@ -372,6 +386,10 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
           candidateId: ask.candidateId, action: ask.action, minutes: ask.value ?? 0, reason,
         });
         if (ask.action === "unlink_account") setNotice("Account link removed and exam password replaced. Print a fresh slip and give it only to the verified candidate.");
+        if (["include_timeout", "exclude_timeout"].includes(ask.action)) {
+          setCertVersion(v => v + 1);
+          setNotice(ask.action === "include_timeout" ? "Timed-out result included. The sitting's certificate rules apply." : "Timed-out result excluded. Its score is kept for reconciliation and any active certificate has been withdrawn.");
+        }
       }
       setAsk(null);
       load();
@@ -391,6 +409,9 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
       candidate_reference: c.candidateReference || c.accessCode,
       import_batch: c.importBatchId || "", imported_by: c.importedBy || "", imported_at: fmt(c.importedAt),
       account_linked: c.userId ? "Yes" : "No", account_linked_at: fmt(c.accountLinkedAt),
+      timed_out: c.timedOut ? "Yes" : "No", result_included: c.includeInResults === false ? "No" : "Yes",
+      result_decision_reason: c.resultDecisionReason || "",
+      review_only: c.status === "disqualified" ? "Yes" : "No", review_scored_at: fmt(c.reviewScoredAt),
       status: STATUS_META[c.status].label,
       score: c.score ?? "", out_of: c.totalQuestions ?? "",
       started: fmt(c.startedAt), submitted: fmt(c.submittedAt),
@@ -429,6 +450,16 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
         @media print{body{padding:0;} .slip{margin-bottom:8px;}}
       </style></head><body>${slips}</body></html>`);
     w.document.close(); w.focus(); w.print();
+  };
+
+  const exportResults = () => {
+    const ws = XLSX.utils.json_to_sheet(shown.filter(c => c.status === "submitted" && c.includeInResults !== false).map(c => ({
+      name: c.fullName, school: c.school || "", grade: c.grade || "", reference: c.candidateReference || c.accessCode,
+      source: c.entrySource === "paper" ? "Paper-based" : "Online", score: c.score, maximum: c.totalQuestions,
+      timed_out: c.timedOut ? "Yes" : "No",
+    })));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Included results");
+    XLSX.writeFile(wb, `${session?.sessionCode || "exam"}-results.xlsx`);
   };
 
   if (loading) {
@@ -649,7 +680,8 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                     <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} /> Auto refresh
                   </label>
                   <Button size="sm" variant="ghost" onClick={load}><RefreshCw size={13} /></Button>
-                  <Button size="sm" variant="secondary" onClick={exportCsv}><Download size={13} /> Export</Button>
+                  <Button size="sm" variant="secondary" onClick={exportCsv}><Download size={13} /> Export roster</Button>
+                  <Button size="sm" variant="secondary" onClick={exportResults}>Export results</Button>
                   <Button size="sm" variant="secondary" onClick={printSlips}><Printer size={13} /> Print slips</Button>
                   <Button size="sm" variant="secondary" onClick={() => setImportOpen(true)}>Import paper results</Button>
                   <Button size="sm" onClick={() => setAddOpen(true)}><Plus size={13} /> Add candidates</Button>
@@ -682,6 +714,14 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                       {label} <span className={statusFilter === key ? "opacity-80" : "text-subtle"}>{n}</span>
                     </button>
                   ))}
+                  <label className="text-sm">Results
+                    <select className="ml-2 border rounded p-2" value={resultFilter} onChange={e => setResultFilter(e.target.value)}>
+                      <option value="all">All attempts</option>
+                      <option value="timed_out">Time elapsed ({stats.timedOut})</option>
+                      <option value="included">Included ({stats.included})</option>
+                      <option value="excluded">Excluded ({stats.excluded})</option>
+                    </select>
+                  </label>
                   <label className="text-sm">Source
                     <select className="ml-2 border rounded p-2" value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}>
                       <option value="all">All ({stats.total})</option>
@@ -728,7 +768,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                     <div className="py-12 text-center">
                       <p className="text-muted text-sm">Nobody here matches that.</p>
                       <Button size="sm" variant="secondary" className="mt-3"
-                        onClick={() => { setStatusFilter("all"); setSearch(""); setSourceFilter("all"); }}>
+                        onClick={() => { setStatusFilter("all"); setSearch(""); setSourceFilter("all"); setResultFilter("all"); }}>
                         Show everyone
                       </Button>
                     </div>
@@ -822,6 +862,8 @@ function CandidateRow({ c, session, paused, onOpen }: {
         <p className="font-medium text-ink">{c.fullName}</p>
         <p className="text-xs text-muted">{c.entrySource === "paper" ? `Paper-based · ${c.candidateReference}` : "Online"}</p>
         {c.userId && <p className="text-xs text-emerald-700">Gifted account linked</p>}
+        {c.timedOut && <p className="text-xs text-amber-800">Time elapsed · {c.includeInResults === false ? "Excluded from results" : "Included in results"}</p>}
+        {c.status === "disqualified" && c.reviewScoredAt && <p className="text-xs text-red-700">Score for admin review only</p>}
         {(c.school || c.grade) && (
           <p className="text-xs text-muted">{[c.school, c.grade && `Grade ${c.grade}`].filter(Boolean).join(" · ")}</p>
         )}
@@ -874,6 +916,16 @@ interface ControlDef {
 }
 
 const CONTROLS: ControlDef[] = [
+  {
+    action: "exclude_timeout", label: "Exclude timed-out result", tone: "danger",
+    help: "Keeps the score in the admin record, hides it from published results and withdraws any active certificate. Give a reason.",
+    show: c => !!c.timedOut && c.status === "submitted" && c.includeInResults !== false,
+  },
+  {
+    action: "include_timeout", label: "Include timed-out result",
+    help: "Makes this score eligible for published results and the sitting's certificate rules again. Give a reason.",
+    show: c => !!c.timedOut && c.status === "submitted" && c.includeInResults === false,
+  },
   {
     action: "unlink_account", label: "Remove Gifted account link", tone: "danger",
     help: "Use after verifying a mistaken claim. Replaces the exam password; print a fresh slip for the rightful candidate to link their account.",
@@ -940,7 +992,7 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           <span className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${meta.cls}`}>{meta.label}</span>
           <span className={`text-xs ${time.tone}`}>{time.text}</span>
           {c.score != null && (
-            <span className="text-xs font-semibold text-ink">Scored {c.score} of {c.totalQuestions}</span>
+            <span className="text-xs font-semibold text-ink">{c.status === "disqualified" ? "Review score" : "Scored"} {c.score} of {c.totalQuestions}</span>
           )}
         </div>
 
@@ -951,6 +1003,17 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           <p>To correct marks, upload the same candidate reference through Import paper results.</p>
         </div>}
         {/* Credentials */}
+        {c.status === "disqualified" && <div className="text-sm bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
+          <p className="font-semibold">Stopped attempt: administrator review only</p>
+          <p>{c.reviewScoredAt ? `Review score recorded ${fmt(c.reviewScoredAt)}.` : "No review score has been recorded yet."}</p>
+          <p>Saved answers are scored against the full paper. Unanswered questions receive zero. Existing completed or paper-based marks are retained.</p>
+          <p>This attempt remains disqualified and excluded from published results, results exports and certificates. Reviewing its score does not reinstate it.</p>
+        </div>}
+        {c.timedOut && <div className="text-sm bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+          <p className="font-semibold">Time elapsed. Saved answers were scored.</p>
+          <p>Unanswered questions receive zero marks. This attempt is {c.includeInResults === false ? "excluded from" : "included in"} results.</p>
+          {c.resultDecisionReason && <p>Decision: {c.resultDecisionReason} · {c.resultDecidedBy} · {fmt(c.resultDecidedAt)}</p>}
+        </div>}
         <div className="text-sm border border-border rounded-lg p-3">
           <p className="font-medium">{c.userId ? "Gifted account linked" : "No Gifted account linked"}</p>
           {c.userId && <>
@@ -1467,7 +1530,7 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
   // Who a bulk issue would actually reach, worked out the same way the database
   // does it, so the number on the button is the real number.
   const eligible = candidates.filter((c) => {
-    if (c.status !== "submitted") return false;
+    if (c.status !== "submitted" || c.includeInResults === false) return false;
     if (byCandidate[c.id]) return false;
     const pct = c.totalQuestions ? Math.round(((c.score ?? 0) / c.totalQuestions) * 100) : 0;
     const matched = bands

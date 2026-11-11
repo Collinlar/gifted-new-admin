@@ -519,6 +519,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   // GET /exam-sessions — list of sittings with a live progress roll-up
   if (p0 === "exam-sessions") {
+    const { error: expiryError } = await supabase.rpc("admin_finalize_expired_exams");
+    if (expiryError) return err(expiryError.message);
     const { data: sessions } = await supabase
       .from("exam_sessions").select("*").order("created_at", { ascending: false });
 
@@ -548,6 +550,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   // GET /exam-session/:id — full roster for the monitoring board
   if (p0 === "exam-session" && p1) {
+    const { error: expiryError } = await supabase.rpc("admin_finalize_expired_exams", { p_session_id: p1 });
+    if (expiryError) return err(expiryError.message);
     const { data: session, error } = await supabase
       .from("exam_sessions").select("*").eq("id", p1).single();
     if (error) return err(error.message);
@@ -1831,6 +1835,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   // POST /candidate-action — invigilator controls on one candidate
   if (p0 === "candidate-action") {
+    if (body.action === "include_timeout" || body.action === "exclude_timeout") {
+      const { data, error } = await supabase.rpc("admin_set_timeout_result", {
+        p_candidate_id: body.candidateId, p_include: body.action === "include_timeout",
+        p_actor: actorFrom(req), p_reason: body.reason || null,
+      });
+      if (error) return err(error.message);
+      return ok(data);
+    }
     if (body.action === "unlink_account") {
       const { data, error } = await supabase.rpc("admin_unlink_exam_account", {
         p_candidate_id: body.candidateId, p_actor: actorFrom(req), p_reason: body.reason || null,
