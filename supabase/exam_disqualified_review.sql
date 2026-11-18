@@ -197,6 +197,9 @@ BEGIN
             -- question reviews as an empty row once results are published.
             'image',         q ->> 'image',
             'imageTitle',    q ->> 'imageTitle',
+            'media',         COALESCE(q -> 'media', '[]'::jsonb),
+            'answerMedia',   COALESCE(q -> 'answerMedia', '[]'::jsonb),
+            'answers',       COALESCE(q -> 'answers', '[]'::jsonb),
             'yourAnswer',    c.answers ->> i::text,
             'correctAnswer', q ->> 'correctAnswer',
             'explanation',   q ->> 'explanation',

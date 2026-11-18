@@ -215,7 +215,7 @@ export default function BulkUploadPage() {
                       <Download size={14} /> Download the template
                     </Button>
                     <p className="text-xs text-muted">
-                      Columns: question, option_a to option_e, correct, explanation, image_url
+                      Supports multiple question and answer image URLs. Separate multiple URLs with | in the template.
                     </p>
                   </div>
 

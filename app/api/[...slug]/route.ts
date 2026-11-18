@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { issueToken, verifyToken, bearerFrom } from "@/lib/adminToken";
 import { renderCertificate, SAMPLE_SNAPSHOT, starterFields } from "@/lib/certificate";
 import { parseGrade, matchesGrade } from "@/lib/grades";
+import { normalizeExamQuestions } from "@/lib/assessmentMedia";
 
 // Where a certificate's QR code and verification line point. Set
 // NEXT_PUBLIC_STUDENT_URL if the student site moves.
@@ -135,7 +136,7 @@ function examRow(body: Record<string, unknown>) {
     time:                pick("time", "timeLimit", "duration") ?? null,
     number_of_questions: pick("numberOfQuestions", "numQuestions") ?? null,
     image:               body.image,
-    questions:           body.questions || [],
+    questions:           normalizeExamQuestions(body.questions),
     instructions:        body.instructions || [],
     featured:            body.featured || false,
     publish:             pick("publish", "published") || false,
@@ -1654,25 +1655,42 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   // POST /import-registrations — bring a Google Form export across.
   //
-  // Rows are matched to accounts by email. Anything unmatched is reported
+  // Rows without email are saved as guests. Supplied emails are matched to accounts.
+  // Anything unmatched is reported
   // rather than dropped, so a spreadsheet is never partially imported without
   // anyone knowing which lines went missing.
   if (p0 === "import-registrations") {
     const rows: Record<string, unknown>[] = Array.isArray(body.rows) ? body.rows : [];
     if (!body.formId) return err("No form given.");
     if (!rows.length) return err("Nothing to import.");
+    if (rows.some((r) => !r || typeof r !== "object" || Array.isArray(r))) {
+      return err("Each import row must contain registration details.");
+    }
 
     const emails = rows.map((r) => String(r.__email || "").trim().toLowerCase()).filter(Boolean);
-    const { data: people } = emails.length
+    const { data: people, error: peopleError } = emails.length
       ? await supabase.from("users").select("id, email").in("email", emails)
-      : { data: [] };
+      : { data: [], error: null };
+    if (peopleError) return err(peopleError.message);
 
     const idByEmail = Object.fromEntries(
       (people || []).map((u: { id: string; email: string }) => [String(u.email).toLowerCase(), u.id])
     );
 
-    const { data: form } = await supabase
+    const { data: form, error: formError } = await supabase
       .from("registration_forms").select("fields").eq("id", body.formId).single();
+    if (formError || !form) return err(formError?.message || "Registration form not found.");
+
+    const identityAnswer = (answers: Record<string, unknown>, source: string, keys: string[]) => {
+      const sourced = (form.fields || [])
+        .filter((field: { source?: string }) => field.source === source)
+        .map((field: { key: string }) => field.key);
+      for (const key of [...sourced, ...keys]) {
+        const value = String(answers[key] ?? "").trim();
+        if (value) return value;
+      }
+      return null;
+    };
 
     const toInsert: Record<string, unknown>[] = [];
     const unmatched: string[] = [];
@@ -1680,14 +1698,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     for (const r of rows) {
       const email = String(r.__email || "").trim().toLowerCase();
       const uid = idByEmail[email];
-      if (!uid) { unmatched.push(email || "(no email)"); continue; }
+      if (email && !uid) { unmatched.push(email); continue; }
 
       const answers = { ...r };
       delete answers.__email;
 
       toInsert.push({
         form_id: body.formId,
-        user_id: uid,
+        user_id: uid || null,
+        guest_name: uid ? null : (
+          [identityAnswer(answers, "profile.first_name", ["first_name"]),
+            identityAnswer(answers, "profile.last_name", ["last_name"])].filter(Boolean).join(" ")
+          || identityAnswer(answers, "profile.full_name", ["full_name", "name"])),
+        guest_phone: uid ? null : identityAnswer(answers, "profile.mobile_number", ["mobile_number", "phone"]),
         answers,
         form_snapshot: form?.fields || [],
         status: body.status || "submitted",
@@ -1820,6 +1843,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   }
 
   // POST /generate-candidates — bulk credential issue
+  if (p0 === "exam-registration-preview" || p0 === "add-registration-candidates") {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuid.test(body.sessionId) || !uuid.test(body.formId)) return err("Choose an exam sitting and registration form.");
+    const adding = p0 === "add-registration-candidates";
+    if (adding && (!Array.isArray(body.registrationIds) || !body.registrationIds.length || body.registrationIds.length > 1000
+      || body.registrationIds.some((id: unknown) => typeof id !== "string" || !uuid.test(id)))) {
+      return err("Select between 1 and 1000 registrations.");
+    }
+    const { data, error } = await supabase.rpc(adding ? "admin_add_registration_candidates" : "admin_exam_registration_preview", {
+      p_session_id: body.sessionId, p_form_id: body.formId,
+      ...(adding ? { p_registration_ids: body.registrationIds, p_actor: actorFrom(req) } : {}),
+    });
+    if (error) return err(error.message);
+    return ok(adding ? data : { registrations: data });
+  }
+
   if (p0 === "generate-candidates") {
     const people = Array.isArray(body.people) ? body.people : [];
     if (!body.sessionId) return err("No exam sitting given.");
@@ -1828,6 +1867,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     const { data, error } = await supabase.rpc("admin_generate_candidates", {
       p_session_id: body.sessionId,
       p_people: people,
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
+  // POST /update-exam-candidate — audited corrections to the identity shown
+  // in results, exports, transcripts and future/reissued certificates.
+  if (p0 === "update-exam-candidate") {
+    const candidateId = String(body.candidateId || "");
+    const fullName = String(body.fullName || "").trim();
+    const school = String(body.school || "").trim();
+    const grade = String(body.grade || "").trim();
+    const reason = String(body.reason || "").trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidateId)) return err("Candidate not found.");
+    if (fullName.length < 2 || fullName.length > 160) return err("Enter the candidate name using 2 to 160 characters.");
+    if (school.length > 200) return err("School must be 200 characters or fewer.");
+    if (grade.length > 80) return err("Grade must be 80 characters or fewer.");
+    if (reason.length < 3 || reason.length > 500) return err("Give a reason using 3 to 500 characters.");
+    const { data, error } = await supabase.rpc("admin_update_exam_candidate", {
+      p_candidate_id: candidateId, p_full_name: fullName, p_school: school || null,
+      p_grade: grade || null, p_actor: actorFrom(req), p_reason: reason,
     });
     if (error) return err(error.message);
     return ok(data);
@@ -1993,7 +2053,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   // POST /bulk-add-exam — create an exam from a parsed spreadsheet, or append
   // the parsed questions onto an exam that already exists.
   if (p0 === "bulk-add-exam") {
-    const incoming = Array.isArray(body.questions) ? body.questions : [];
+    const incoming = normalizeExamQuestions(body.questions);
     if (incoming.length === 0) return err("No questions to import.");
 
     if (body.examId) {
@@ -2001,7 +2061,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
         .from("exams").select("id, questions").eq("id", body.examId).single();
       if (readErr) return err(readErr.message);
 
-      const merged = [...(existing.questions || []), ...incoming];
+      const merged = normalizeExamQuestions([...(existing.questions || []), ...incoming]);
       const { data, error } = await supabase
         .from("exams")
         .update({ questions: merged, number_of_questions: merged.length })
@@ -2623,7 +2683,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.published          !== undefined) patch.publish             = body.published;
     if (body.publish            !== undefined) patch.publish             = body.publish;
     if (body.contest            !== undefined) patch.contest             = body.contest;
-    if (body.questions          !== undefined) patch.questions           = body.questions;
+    if (body.questions          !== undefined) patch.questions           = normalizeExamQuestions(body.questions);
     // Instructions could be written at creation but never edited afterwards,
     // because this patch never carried them.
     if (body.instructions       !== undefined) patch.instructions        = body.instructions;

@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import type { AssessmentMedia } from "@/lib/assessmentMedia";
 
 // ── Sheet contract ─────────────────────────────────────────────────────────
 // One row per question. Flat columns rather than nested JSON, because the
@@ -7,6 +8,8 @@ import * as XLSX from "xlsx";
 export const COLUMNS = [
   "question", "option_a", "option_b", "option_c", "option_d", "option_e",
   "correct", "explanation", "image_url", "image_title",
+  "question_image_urls", "answer_a_image_urls", "answer_b_image_urls",
+  "answer_c_image_urls", "answer_d_image_urls", "answer_e_image_urls",
 ] as const;
 
 const LETTERS = ["A", "B", "C", "D", "E"] as const;
@@ -19,6 +22,8 @@ export interface ParsedQuestion {
   explanation: string;
   image: string;
   imageTitle: string;     // caption printed under the picture, also its alt text
+  media: AssessmentMedia[];
+  answerMedia: AssessmentMedia[][];
   errors: string[];       // blocking: row cannot be imported
   warnings: string[];     // non-blocking: worth a look
   skip: boolean;          // excluded by the user
@@ -33,6 +38,8 @@ export function downloadTemplate() {
       explanation: "7 × 8 = 56",
       image_url: "",
       image_title: "",
+      question_image_urls: "", answer_a_image_urls: "", answer_b_image_urls: "",
+      answer_c_image_urls: "", answer_d_image_urls: "", answer_e_image_urls: "",
     },
     {
       question: "The factor tree of 2023 is shown below. How many whole numbers divide it?",
@@ -41,13 +48,17 @@ export function downloadTemplate() {
       explanation: "2023 = 7 × 17 × 17, giving six divisors.",
       image_url: "https://example.com/factor-tree.png",
       image_title: "Figure 1: the factor tree of 2023",
+      question_image_urls: "https://example.com/factor-tree-close-up.png | https://example.com/factor-tree-full.png",
+      answer_a_image_urls: "", answer_b_image_urls: "", answer_c_image_urls: "",
+      answer_d_image_urls: "", answer_e_image_urls: "",
     },
   ];
 
   const ws = XLSX.utils.json_to_sheet(sample, { header: COLUMNS as unknown as string[] });
   ws["!cols"] = [
     { wch: 52 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
-    { wch: 9 }, { wch: 40 }, { wch: 30 }, { wch: 30 },
+    { wch: 9 }, { wch: 40 }, { wch: 30 }, { wch: 30 }, { wch: 45 },
+    { wch: 35 }, { wch: 35 }, { wch: 35 }, { wch: 35 }, { wch: 35 },
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Questions");
@@ -57,6 +68,10 @@ export function downloadTemplate() {
 function str(v: unknown): string {
   if (v === null || v === undefined) return "";
   return String(v).trim();
+}
+
+function mediaList(value: unknown): AssessmentMedia[] {
+  return str(value).split(/\s*(?:\||\r?\n)\s*/).map(url => url.trim()).filter(Boolean).map(url => ({ url }));
 }
 
 export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
@@ -86,6 +101,13 @@ export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
     // and silently dropping the pictures is worse than accepting all three.
     const image = str(row.image_url ?? row.image ?? row.imageurl ?? row.image_link);
     const imageTitle = str(row.image_title ?? row.image_caption ?? row.imagetitle);
+    const media = [
+      ...(image ? [{ url: image, title: imageTitle || undefined }] : []),
+      ...mediaList(row.question_image_urls ?? row.question_images),
+    ].filter((item, index, all) => all.findIndex(other => other.url === item.url) === index);
+    const answerMedia = LETTERS.map(L => mediaList(
+      row[`answer_${L.toLowerCase()}_image_urls`] ?? row[`option_${L.toLowerCase()}_images`]
+    ));
 
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -116,12 +138,12 @@ export async function parseQuestionFile(file: File): Promise<ParsedQuestion[]> {
       else seen.set(key, rowNumber);
     }
 
-    if (image && !/^https?:\/\//i.test(image)) {
+    if (media.some(item => !/^https?:\/\//i.test(item.url))) {
       warnings.push("Image link does not start with http, it may not load");
     }
 
     return {
-      rowNumber, question, rawOptions, correctLetter, explanation, image, imageTitle,
+      rowNumber, question, rawOptions, correctLetter, explanation, image, imageTitle, media, answerMedia,
       errors, warnings, skip: errors.length > 0,
     };
   });
@@ -141,8 +163,10 @@ export function toExamQuestions(rows: ParsedQuestion[]) {
         answers: r.rawOptions.filter(Boolean),
         correctAnswer: r.rawOptions[idx] ?? "",
         explanation: r.explanation,
-        image: r.image,
-        imageTitle: r.imageTitle,
+        media: r.media,
+        answerMedia: r.answerMedia.filter((_, index) => !!r.rawOptions[index]),
+        image: r.media[0]?.url || r.image,
+        imageTitle: r.media[0]?.title || r.imageTitle,
       };
     });
 }

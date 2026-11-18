@@ -9,7 +9,7 @@ try {
     CREATE SCHEMA auth; CREATE TABLE auth.users(id uuid PRIMARY KEY);
     CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     CREATE TABLE exams(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),title text,questions jsonb);`);
-  for (const file of ['exam_mode.sql','exam_mode_v2.sql','certificates.sql','exam_pause_repair.sql','exam_results_images.sql','exam_paper_results.sql','exam_account_claims.sql','exam_timeout_results.sql','exam_timeout_results.sql'])
+  for (const file of ['exam_mode.sql','exam_mode_v2.sql','certificates.sql','exam_pause_repair.sql','exam_results_images.sql','exam_paper_results.sql','exam_account_claims.sql','exam_timeout_results.sql','exam_timeout_results.sql','exam_candidate_corrections.sql'])
     await db.exec(await readFile(new URL(`../supabase/${file}`,import.meta.url),'utf8'));
   console.log('PASS timeout migration and repeat migration');
   const exam=(await one(`INSERT INTO exams(title,questions) VALUES('Test','[{"question":"Q1","correctAnswer":"A"},{"question":"Q2","correctAnswer":"B"},{"question":"Q3","correctAnswer":"C"}]') RETURNING id`)).id;

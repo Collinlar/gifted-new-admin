@@ -10,6 +10,8 @@ import Input from "@/components/ui/Input";
 import MathEditor from "@/components/ui/MathEditor";
 import api from "@/lib/api";
 import ImageField from "@/components/ui/ImageField";
+import MediaGalleryField from "@/components/ui/MediaGalleryField";
+import type { AssessmentMedia } from "@/lib/assessmentMedia";
 import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
@@ -20,6 +22,7 @@ const PROGRAMS = ["Mathematics", "Physics", "Chemistry", "Biology", "Computer Sc
 interface Answer {
   text: string;
   isCorrect: boolean;
+  media: AssessmentMedia[];
 }
 
 interface Question {
@@ -28,19 +31,21 @@ interface Question {
   explanation: string;
   image?: string;
   imageTitle?: string;
+  media: AssessmentMedia[];
   expanded: boolean;
 }
 
 const blankQuestion = (): Question => ({
   question: "",
   answers: [
-    { text: "", isCorrect: false },
-    { text: "", isCorrect: false },
-    { text: "", isCorrect: false },
-    { text: "", isCorrect: false },
+    { text: "", isCorrect: false, media: [] },
+    { text: "", isCorrect: false, media: [] },
+    { text: "", isCorrect: false, media: [] },
+    { text: "", isCorrect: false, media: [] },
   ],
   explanation: "",
   image: "",
+  media: [],
   expanded: true,
 });
 
@@ -103,6 +108,12 @@ export default function AddQuizPage() {
     setQuestions(u);
   };
 
+  const updateAnswerMedia = (qi: number, ai: number, media: AssessmentMedia[]) => {
+    const u = [...questions];
+    u[qi].answers[ai] = { ...u[qi].answers[ai], media };
+    setQuestions(u);
+  };
+
   const setCorrectAnswer = (qi: number, ai: number) => {
     const u = [...questions];
     u[qi].answers = u[qi].answers.map((a, idx) => ({ ...a, isCorrect: idx === ai }));
@@ -144,10 +155,12 @@ export default function AddQuizPage() {
         questions: validQs.map((q) => ({
           question: q.question,
           answers: q.answers.map((a) => a.text).filter(Boolean),
-          correctAnswer: q.answers.find((a) => a.isCorrect)?.text || q.answers.filter(Boolean)[0]?.text || "",
+          correctAnswer: q.answers.find((a) => a.isCorrect)?.text || q.answers.find((a) => a.text.trim())?.text || "",
           explanation: q.explanation,
-          image: q.image,
-          imageTitle: q.imageTitle,
+          media: q.media,
+          answerMedia: q.answers.filter((a) => a.text.trim()).map((a) => a.media),
+          image: q.media[0]?.url || q.image,
+          imageTitle: q.media[0]?.title || q.imageTitle,
         })),
       };
       await api.post("/add-exam", payload);
@@ -349,13 +362,10 @@ export default function AddQuizPage() {
 
                       {/* Question diagram: paste a link or upload a file, both
                           land in the same field the spreadsheet importer fills. */}
-                      <ImageField
-                        label="Question image (shown above the question)"
-                        value={q.image || ""}
-                        onChange={(url) => updateQuestion(qi, "image", url)}
-                        title={q.imageTitle || ""}
-                        onTitleChange={(t) => updateQuestion(qi, "imageTitle", t)}
-                      />
+                      <MediaGalleryField label="Question images" value={q.media}
+                        onChange={(media) => {
+                          const u = [...questions]; u[qi] = { ...u[qi], media }; setQuestions(u);
+                        }} />
 
                       {/* Answer options */}
                       <div className="space-y-2">
@@ -376,6 +386,10 @@ export default function AddQuizPage() {
                                 placeholder={`Option ${String.fromCharCode(65 + ai)}`}
                                 rows={2}
                               />
+                              <div className="mt-2">
+                                <MediaGalleryField compact label={`Images for option ${String.fromCharCode(65 + ai)}`}
+                                  value={ans.media} onChange={(media) => updateAnswerMedia(qi, ai, media)} />
+                              </div>
                             </div>
                           </div>
                         ))}

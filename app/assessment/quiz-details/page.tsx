@@ -8,6 +8,8 @@ import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import Input from "@/components/ui/Input";
 import ImageField from "@/components/ui/ImageField";
+import MediaGalleryField from "@/components/ui/MediaGalleryField";
+import { answerMedia, normalizeExamQuestions, questionMedia, type AssessmentMedia } from "@/lib/assessmentMedia";
 import api from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Image as ImageIcon, Sparkles } from "lucide-react";
@@ -20,6 +22,8 @@ interface Question {
   hint?: string;
   image?: string;
   imageTitle?: string;
+  media?: AssessmentMedia[];
+  answerMedia?: AssessmentMedia[][];
 }
 
 interface Quiz {
@@ -73,9 +77,10 @@ export default function QuizDetailsPage() {
   } | null>(null);
 
   const [editingQ, setEditingQ] = useState<number | null>(null);
-  const [qForm, setQForm] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "" });
+  const blankQuestion = (): Question => ({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "", media: [], answerMedia: [[], [], [], []] });
+  const [qForm, setQForm] = useState<Question>(blankQuestion());
   const [addingQ, setAddingQ] = useState(false);
-  const [newQ, setNewQ] = useState<Question>({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "" });
+  const [newQ, setNewQ] = useState<Question>(blankQuestion());
 
   const load = async () => {
     const id = localStorage.getItem("id");
@@ -83,7 +88,8 @@ export default function QuizDetailsPage() {
     setLoading(true);
     try {
       const res = await api.get(`/all-exams/${id}`);
-      setQuiz(res.data.exam);
+      const exam = res.data.exam as Quiz;
+      setQuiz({ ...exam, questions: normalizeExamQuestions(exam.questions) as unknown as Question[] });
     } finally {
       setLoading(false);
     }
@@ -163,7 +169,9 @@ export default function QuizDetailsPage() {
   const startQEdit = (i: number) => {
     const q = quiz?.questions?.[i];
     if (!q) return;
-    setQForm({ ...q, answers: [...(q.answers || ["", "", "", ""])] });
+    const answers = [...(q.answers || ["", "", "", ""])]
+    setQForm({ ...q, answers, media: questionMedia(q as unknown as Record<string, unknown>),
+      answerMedia: answerMedia(q as unknown as Record<string, unknown>, answers.length) });
     setEditingQ(i);
   };
 
@@ -172,7 +180,7 @@ export default function QuizDetailsPage() {
     setSaving(true);
     try {
       const questions = [...(quiz.questions || [])];
-      questions[editingQ] = qForm;
+      questions[editingQ] = { ...qForm, image: qForm.media?.[0]?.url || "", imageTitle: qForm.media?.[0]?.title || "" };
       await api.put(`/update-exam/${quiz._id}`, { questions });
       await load();
       setEditingQ(null);
@@ -193,10 +201,10 @@ export default function QuizDetailsPage() {
     if (!quiz || !newQ.question.trim()) return;
     setSaving(true);
     try {
-      const questions = [...(quiz.questions || []), newQ];
+      const questions = [...(quiz.questions || []), { ...newQ, image: newQ.media?.[0]?.url || "", imageTitle: newQ.media?.[0]?.title || "" }];
       await api.put(`/update-exam/${quiz._id}`, { questions });
       await load();
-      setNewQ({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "" });
+      setNewQ(blankQuestion());
       setAddingQ(false);
     } finally {
       setSaving(false);
@@ -444,8 +452,11 @@ export default function QuizDetailsPage() {
                 <div key={i} className="border border-border rounded-xl overflow-hidden">
                   <div className="bg-surface px-4 py-3 flex items-start justify-between gap-4">
                     <div className="flex-1">
-                      <span className="text-sm font-medium text-ink">{i + 1}. {q.question}</span>
-                      {q.image && <img src={q.image} alt="" className="mt-2 h-24 rounded-lg object-contain border border-border" />}
+                      <span className="text-sm font-medium text-ink">{i + 1}. {q.question.replace(/<[^>]+>/g, " ").trim()}</span>
+                      {questionMedia(q as unknown as Record<string, unknown>).length > 0 && <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {questionMedia(q as unknown as Record<string, unknown>).map((item, mi) => <img key={`${item.url}-${mi}`} src={item.url}
+                          alt={item.alt || item.title || ""} className="h-24 w-full rounded-lg object-contain border border-border" />)}
+                      </div>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {editingQ === i ? (
@@ -469,19 +480,17 @@ export default function QuizDetailsPage() {
                         <textarea value={qForm.question} onChange={(e) => setQForm({ ...qForm, question: e.target.value })} rows={2}
                           className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                       </div>
-                      <ImageField
-                        compact
-                        label="Image (optional)"
-                        value={qForm.image || ""}
-                        onChange={(url) => setQForm({ ...qForm, image: url })}
-                        title={qForm.imageTitle || ""}
-                        onTitleChange={(t) => setQForm({ ...qForm, imageTitle: t })}
-                      />
+                      <MediaGalleryField compact label="Question images" value={qForm.media || []}
+                        onChange={(media) => setQForm({ ...qForm, media })} />
                       {qForm.answers.map((ans, ai) => (
                         <div key={ai} className="space-y-1">
                           <label className="text-xs font-medium text-muted">Option {ai + 1}</label>
                           <input value={ans} onChange={(e) => { const a = [...qForm.answers]; a[ai] = e.target.value; setQForm({ ...qForm, answers: a }); }}
                             className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                          <MediaGalleryField compact label={`Images for option ${String.fromCharCode(65 + ai)}`}
+                            value={qForm.answerMedia?.[ai] || []} onChange={(media) => {
+                              const next = [...(qForm.answerMedia || qForm.answers.map(() => []))]; next[ai] = media; setQForm({ ...qForm, answerMedia: next });
+                            }} />
                         </div>
                       ))}
                       <div className="space-y-1">
@@ -509,7 +518,8 @@ export default function QuizDetailsPage() {
                       {q.answers.map((a, ai) => (
                         <div key={ai} className={`flex items-center gap-2 text-sm py-1 px-2 rounded-lg ${a === q.correctAnswer ? "bg-emerald-50 text-emerald-800 font-medium" : "text-muted"}`}>
                           <span className="w-5 h-5 rounded-full border border-current flex items-center justify-center text-xs shrink-0">{String.fromCharCode(65 + ai)}</span>
-                          {a}
+                          <span>{a.replace(/<[^>]+>/g, " ").trim()}</span>
+                          {(q.answerMedia?.[ai] || []).length > 0 && <span className="text-xs text-blue-600">{q.answerMedia?.[ai].length} image(s)</span>}
                           {a === q.correctAnswer && <Check size={12} className="ml-auto" />}
                         </div>
                       ))}
@@ -535,19 +545,17 @@ export default function QuizDetailsPage() {
                       placeholder="Type the question..."
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                   </div>
-                  <ImageField
-                    compact
-                    label="Image (optional)"
-                    value={newQ.image || ""}
-                    onChange={(url) => setNewQ({ ...newQ, image: url })}
-                    title={newQ.imageTitle || ""}
-                    onTitleChange={(t) => setNewQ({ ...newQ, imageTitle: t })}
-                  />
+                  <MediaGalleryField compact label="Question images" value={newQ.media || []}
+                    onChange={(media) => setNewQ({ ...newQ, media })} />
                   {newQ.answers.map((a, ai) => (
                     <div key={ai} className="space-y-1">
                       <label className="text-xs font-medium text-muted">Option {ai + 1}</label>
                       <input value={a} onChange={(e) => { const answers = [...newQ.answers]; answers[ai] = e.target.value; setNewQ({ ...newQ, answers }); }}
                         className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                      <MediaGalleryField compact label={`Images for option ${String.fromCharCode(65 + ai)}`}
+                        value={newQ.answerMedia?.[ai] || []} onChange={(media) => {
+                          const next = [...(newQ.answerMedia || newQ.answers.map(() => []))]; next[ai] = media; setNewQ({ ...newQ, answerMedia: next });
+                        }} />
                     </div>
                   ))}
                   <div className="space-y-1">

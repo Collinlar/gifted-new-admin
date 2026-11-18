@@ -10,12 +10,14 @@ import Spinner from "@/components/ui/Spinner";
 import SlidePanel from "@/components/ui/SlidePanel";
 import api from "@/lib/api";
 import PaperResultsImport from "@/components/PaperResultsImport";
+import RegistrationCandidatesImport from "@/components/RegistrationCandidatesImport";
 import * as XLSX from "xlsx";
 import {
   Plus, ArrowLeft, Users, Clock, ShieldAlert, Copy, Check, Download,
   Printer, ChevronRight, RefreshCw, Play, Square, Link2, Pause,
   ShieldCheck, FileText, History, Send, Lock, Unlock, X, AlertTriangle,
   CheckCircle2, XCircle, Award, Trash2, Settings, Search, FileArchive, Loader2,
+  Pencil,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -123,6 +125,8 @@ const ACTION_LABEL: Record<string, string> = {
   "candidate.unlink_account": "Removed Gifted account link",
   "session.import_paper_results": "Imported paper results",
   "candidate.paper_import": "Imported paper result",
+  "candidate.registration_import": "Added candidates from registrations",
+  "candidate.profile_update": "Corrected candidate details",
   "candidate.paper_correction": "Corrected paper result",
   "candidate.release":        "Released the device lock",
   "candidate.extend":         "Added time",
@@ -791,7 +795,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
             setImportOpen(false); setNotice(message); setCertVersion(v => v + 1); load();
           }} />}
         <AddCandidatesPanel open={addOpen} sessionId={sessionId}
-          onClose={() => setAddOpen(false)} onAdded={() => { setAddOpen(false); load(); }} />
+          onClose={() => setAddOpen(false)} onAdded={load} />
 
         {panelFor && (
           <CandidatePanel
@@ -802,6 +806,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
             onClose={() => setPanelFor(null)}
             onRequest={request}
             onTranscript={() => { setTranscriptFor(panelFor); setPanelFor(null); }}
+            onUpdated={(message) => { setNotice(message); setCertVersion(v => v + 1); load(); }}
           />
         )}
 
@@ -968,16 +973,18 @@ const CONTROLS: ControlDef[] = [
   },
 ];
 
-function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }: {
+function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript, onUpdated }: {
   c: Candidate; session: Session | null; paused: boolean; onClose: () => void;
   onRequest: (title: string, action: string, scope: "session" | "candidate",
               opts?: { candidateId?: string; value?: number; flag?: boolean }) => void;
   onTranscript: () => void;
+  onUpdated: (message: string) => void;
 }) {
   const meta = STATUS_META[c.status];
   const time = candidateTime(c, paused);
   const maxTabs = session?.maxTabSwitches ?? 0;
   const overLimit = maxTabs > 0 && c.tabSwitches > maxTabs;
+  const [editing, setEditing] = useState(false);
 
   return (
     <SlidePanel open onClose={onClose} title={c.fullName} width="lg">
@@ -986,6 +993,16 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
           <p className="text-sm text-muted -mt-2">
             {[c.school, c.grade && `Grade ${c.grade}`].filter(Boolean).join(" · ")}
           </p>
+        )}
+
+        {editing ? (
+          <CandidateDetailsEditor c={c} onCancel={() => setEditing(false)} onSaved={(message) => {
+            setEditing(false); onUpdated(message);
+          }} />
+        ) : (
+          <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+            <Pencil size={13} /> Correct name, school or grade
+          </Button>
         )}
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -1101,6 +1118,53 @@ function CandidatePanel({ c, session, paused, onClose, onRequest, onTranscript }
         </div>
       </div>
     </SlidePanel>
+  );
+}
+
+function CandidateDetailsEditor({ c, onCancel, onSaved }: {
+  c: Candidate; onCancel: () => void; onSaved: (message: string) => void;
+}) {
+  const [fullName, setFullName] = useState(c.fullName || "");
+  const [school, setSchool] = useState(c.school || "");
+  const [grade, setGrade] = useState(c.grade || "");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    setError("");
+    if (fullName.trim().length < 2) return setError("Enter the candidate's full name.");
+    if (reason.trim().length < 3) return setError("State why these details are being corrected.");
+    setSaving(true);
+    try {
+      const res = await api.post("/update-exam-candidate", {
+        candidateId: c.id, fullName: fullName.trim(), school: school.trim(), grade: grade.trim(), reason: reason.trim(),
+      });
+      onSaved(res.data.certificateReissued
+        ? "Candidate details corrected. Their previous certificate was withdrawn and a corrected certificate was issued."
+        : res.data.changed
+          ? "Candidate details corrected. Results, exports and future certificates now use the updated details."
+          : "Those candidate details were already up to date.");
+    } catch (e) { setError(serverMessage(e, "The candidate details could not be updated.")); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="border border-primary/30 bg-primary-light/20 rounded-xl p-4 space-y-3">
+      <div>
+        <p className="text-sm font-semibold text-ink">Correct candidate details</p>
+        <p className="text-xs text-muted mt-0.5">This changes this exam record only. The reason and before/after values are kept in the audit.</p>
+      </div>
+      <Input label="Full name" value={fullName} maxLength={160} disabled={saving} onChange={(e) => setFullName(e.target.value)} />
+      <Input label="School" value={school} maxLength={200} disabled={saving} onChange={(e) => setSchool(e.target.value)} />
+      <Input label="Grade or class" value={grade} maxLength={80} disabled={saving} onChange={(e) => setGrade(e.target.value)} />
+      <Input label="Reason for correction" value={reason} maxLength={500} disabled={saving}
+        placeholder="e.g. Candidate confirmed the spelling after results were published"
+        onChange={(e) => setReason(e.target.value)} />
+      {error && <p role="alert" className="text-sm text-danger bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+      <div className="flex gap-2">
+        <Button size="sm" onClick={save} disabled={saving}>{saving ? "Saving correction..." : "Save corrected details"}</Button>
+        <Button size="sm" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
+      </div>
+    </div>
   );
 }
 
@@ -2120,7 +2184,7 @@ function CreateSessionPanel({ open, exams, onClose, onCreated }: {
 function AddCandidatesPanel({ open, sessionId, onClose, onAdded }: {
   open: boolean; sessionId: string; onClose: () => void; onAdded: () => void;
 }) {
-  const [mode, setMode]   = useState<"paste" | "file" | "count">("paste");
+  const [mode, setMode]   = useState<"paste" | "file" | "count" | "registrations">("paste");
   const [text, setText]   = useState("");
   const [count, setCount] = useState("30");
   const [prefix, setPrefix] = useState("Candidate");
@@ -2174,6 +2238,7 @@ function AddCandidatesPanel({ open, sessionId, onClose, onAdded }: {
       await api.post("/generate-candidates", { sessionId, people: preview });
       setText(""); setPeople(null);
       onAdded();
+      onClose();
     } catch (e) {
       setError(serverMessage(e, "Could not generate the credentials. Try again."));
     } finally { setSaving(false); }
@@ -2182,8 +2247,8 @@ function AddCandidatesPanel({ open, sessionId, onClose, onAdded }: {
   return (
     <SlidePanel open={open} onClose={onClose} title="Add candidates" width="lg">
       <div className="space-y-5">
-        <div className="flex gap-2">
-          {([["paste", "Paste a list"], ["file", "Upload a file"], ["count", "Just a number"]] as const).map(([v, label]) => (
+        <div className="flex flex-wrap gap-2">
+          {([["paste", "Paste a list"], ["file", "Upload a file"], ["count", "Just a number"], ["registrations", "From registrations"]] as const).map(([v, label]) => (
             <button key={v} type="button" onClick={() => { setMode(v); setError(""); }}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                 mode === v ? "bg-primary text-white border-primary" : "border-border text-muted hover:border-primary hover:text-primary"
@@ -2193,6 +2258,7 @@ function AddCandidatesPanel({ open, sessionId, onClose, onAdded }: {
           ))}
         </div>
 
+        {mode === "registrations" ? <RegistrationCandidatesImport sessionId={sessionId} onAdded={onAdded} /> : <>
         {mode === "paste" && (
           <div className="space-y-1">
             <label className="text-sm font-medium text-ink">One candidate per line</label>
@@ -2249,6 +2315,7 @@ function AddCandidatesPanel({ open, sessionId, onClose, onAdded }: {
           </Button>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
         </div>
+        </>}
       </div>
     </SlidePanel>
   );

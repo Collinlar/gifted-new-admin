@@ -75,12 +75,12 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
   const mappedCount = Object.values(map).filter((v) => v !== SKIP && v !== EMAIL).length;
 
   const run = async () => {
-    if (!rows || !emailColumn) return;
+    if (!rows || (!emailColumn && !mappedCount)) return;
     setBusy(true); setError("");
     try {
       // Reshape each spreadsheet row into answers keyed by field
       const payload = rows.map((r) => {
-        const out: Record<string, unknown> = { __email: String(r[emailColumn] ?? "").trim() };
+        const out: Record<string, unknown> = { __email: emailColumn ? String(r[emailColumn] ?? "").trim() : "" };
         for (const [col, target] of Object.entries(map)) {
           if (target === SKIP || target === EMAIL) continue;
           out[target] = r[col];
@@ -135,7 +135,8 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
           <>
             <p className="text-sm text-muted">
               Export the responses sheet from Google Forms, then match its columns to the questions
-              on this form. Rows are attached to accounts by email address.
+              on this form. Email is optional. Rows with a matching email are attached to accounts;
+              rows without an email are saved as guest registrations.
             </p>
 
             <div onClick={() => fileRef.current?.click()}
@@ -163,7 +164,7 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
                   <p className="text-sm font-semibold text-ink mb-1">Match the columns</p>
                   <p className="text-xs text-muted mb-3">
                     We have guessed from the column names. Correct anything wrong, and set which
-                    column holds the email address.
+                    column holds the email address, if your file includes one.
                   </p>
 
                   <div className="border border-border rounded-xl divide-y divide-border max-h-80 overflow-y-auto">
@@ -178,7 +179,7 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
                         <select value={map[h]} onChange={(e) => setMap({ ...map, [h]: e.target.value })}
                           className="shrink-0 w-48 border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-primary">
                           <option value={SKIP}>Do not import</option>
-                          <option value={EMAIL}>Email address (to match)</option>
+                          <option value={EMAIL}>Email address (optional)</option>
                           {fields
                             .filter((f) => f.type !== "section" && f.type !== "info")
                             .map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
@@ -190,8 +191,8 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
 
                 {!emailColumn && (
                   <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
-                    Pick which column holds the email address. Without it there is no way to tell
-                    whose registration each row is.
+                    No email column selected. Match the participant names and other details above.
+                    These rows will be saved as guest registrations. Uploading them again creates new registrations.
                   </p>
                 )}
 
@@ -204,7 +205,7 @@ export default function ImportPanel({ formId, fields, onClose, onImported }: Pro
                 {error && <p className="text-sm text-danger bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
                 <div className="flex gap-3 pt-2 border-t border-border">
-                  <Button onClick={run} disabled={busy || !emailColumn}>
+                  <Button onClick={run} disabled={busy || (!emailColumn && !mappedCount)}>
                     {busy ? <><Loader2 size={13} className="animate-spin" /> Importing...</>
                           : `Import ${rows.length} rows`}
                   </Button>
