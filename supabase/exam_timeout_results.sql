@@ -352,6 +352,8 @@ BEGIN
         'imageTitle', q ->> 'imageTitle',
         'media',      COALESCE(q -> 'media', '[]'::jsonb),
         'answerMedia',COALESCE(q -> 'answerMedia', '[]'::jsonb),
+        'answerValues',COALESCE(q -> 'answerValues', q -> 'answers', '[]'::jsonb),
+        'correctAnswerIndex',q -> 'correctAnswerIndex',
         'answers',    COALESCE(q -> 'answers', '[]'::jsonb)
       ));
     END IF;
@@ -449,6 +451,8 @@ BEGIN
             'imageTitle',    q ->> 'imageTitle',
             'media',         COALESCE(q -> 'media', '[]'::jsonb),
             'answerMedia',   COALESCE(q -> 'answerMedia', '[]'::jsonb),
+            'answerValues',  COALESCE(q -> 'answerValues', q -> 'answers', '[]'::jsonb),
+            'correctAnswerIndex', q -> 'correctAnswerIndex',
             'answers',       COALESCE(q -> 'answers', '[]'::jsonb),
             'yourAnswer',    c.answers ->> i::text,
             'correctAnswer', q ->> 'correctAnswer',
@@ -559,6 +563,7 @@ BEGIN
         breakdown := breakdown || jsonb_build_array(jsonb_build_object(
           'idx', i, 'question', q->>'question', 'image', q->>'image', 'imageTitle', q->>'imageTitle',
           'media', COALESCE(q->'media','[]'::jsonb), 'answerMedia', COALESCE(q->'answerMedia','[]'::jsonb),
+          'answerValues', COALESCE(q->'answerValues',q->'answers','[]'::jsonb), 'correctAnswerIndex', q->'correctAnswerIndex',
           'options', COALESCE(q->'answers', '[]'::jsonb), 'yourAnswer', c.answers->>i::text,
           'correctAnswer', q->>'correctAnswer', 'explanation', q->>'explanation',
           'correct', (c.answers->>i::text) IS NOT NULL AND (c.answers->>i::text) = (q->>'correctAnswer')));

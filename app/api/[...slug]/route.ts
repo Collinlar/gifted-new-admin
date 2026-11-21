@@ -2683,7 +2683,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.published          !== undefined) patch.publish             = body.published;
     if (body.publish            !== undefined) patch.publish             = body.publish;
     if (body.contest            !== undefined) patch.contest             = body.contest;
-    if (body.questions          !== undefined) patch.questions           = normalizeExamQuestions(body.questions);
+    if (body.questions          !== undefined) {
+      const questions = normalizeExamQuestions(body.questions);
+      patch.questions = questions;
+      patch.number_of_questions = questions.length;
+    }
     // Instructions could be written at creation but never edited afterwards,
     // because this patch never carried them.
     if (body.instructions       !== undefined) patch.instructions        = body.instructions;

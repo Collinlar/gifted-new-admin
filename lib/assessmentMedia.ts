@@ -4,6 +4,8 @@ export interface AssessmentMedia {
   alt?: string;
 }
 
+const MEDIA_OPTION_VALUE = "__assessment_media_option_";
+
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -66,28 +68,53 @@ export function answerMedia(question: Record<string, unknown>, count: number): A
   return Array.from({ length: count }, (_, index) => normalizeMedia(raw[index]));
 }
 
+export function questionHasContent(question: Record<string, unknown>): boolean {
+  const prompt = splitLegacyImages(question.question);
+  return !!prompt.content || prompt.media.length > 0 || questionMedia(question).length > 0;
+}
+
+export function answerHasContent(textValue: unknown, mediaValue: unknown): boolean {
+  const answer = splitLegacyImages(textValue);
+  return !!answer.content || answer.media.length > 0 || normalizeMedia(mediaValue).length > 0;
+}
+
 export function normalizeExamQuestions(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
   return value.map((raw) => {
     const question = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
     const prompt = splitLegacyImages(question.question);
     const originalAnswers = Array.isArray(question.answers) ? question.answers.map((a) => String(a ?? "")) : [];
-    const correctIndex = originalAnswers.findIndex((answer) => answer === String(question.correctAnswer ?? ""));
-    const existingAnswerMedia = answerMedia(question, originalAnswers.length);
-    const cleanedAnswers = originalAnswers.map((answer, index) => {
+    const originalAnswerMedia = answerMedia(question, originalAnswers.length);
+    const existingValues = Array.isArray(question.answerValues) && question.answerValues.length === originalAnswers.length
+      ? question.answerValues.map((value) => String(value ?? "")) : originalAnswers;
+    const prepared = originalAnswers.map((answer, index) => {
       const clean = splitLegacyImages(answer);
-      existingAnswerMedia[index] = normalizeMedia([...existingAnswerMedia[index], ...clean.media]);
-      return clean.content;
-    });
+      const media = normalizeMedia([...originalAnswerMedia[index], ...clean.media]);
+      return { answer: clean.content, media, previousValue: existingValues[index], original: answer, originalIndex: index };
+    }).filter((item) => !!item.answer || item.media.length > 0);
+    const cleanedAnswers = prepared.map((item) => item.answer);
+    const storedCorrectIndex = question.correctAnswerIndex;
+    const existingCorrectIndex = storedCorrectIndex === null || storedCorrectIndex === undefined || storedCorrectIndex === ""
+      ? Number.NaN : Number(storedCorrectIndex);
+    const rawCorrect = String(question.correctValue ?? question.correctAnswer ?? "");
+    let correctIndex = Number.isInteger(existingCorrectIndex) && existingCorrectIndex >= 0
+      ? prepared.findIndex((item) => item.originalIndex === existingCorrectIndex)
+      : prepared.findIndex((item) => item.original === rawCorrect || item.previousValue === rawCorrect);
+    if (correctIndex < 0 && prepared.length === 1) correctIndex = 0;
+    const values = prepared.map((item, index) => item.answer ||
+      (item.previousValue.startsWith(MEDIA_OPTION_VALUE) ? item.previousValue : `${MEDIA_OPTION_VALUE}${index + 1}__`));
     const media = normalizeMedia([...questionMedia(question), ...prompt.media]);
     const first = media[0];
     return {
       ...question,
       question: prompt.content,
       answers: cleanedAnswers,
-      correctAnswer: correctIndex >= 0 ? cleanedAnswers[correctIndex] : text(question.correctAnswer),
+      answerValues: values,
+      correctAnswerIndex: correctIndex,
+      correctAnswer: correctIndex >= 0 ? values[correctIndex] : rawCorrect,
+      correctValue: correctIndex >= 0 ? values[correctIndex] : rawCorrect,
       media,
-      answerMedia: existingAnswerMedia,
+      answerMedia: prepared.map((item) => item.media),
       // Backwards compatibility for clients that have not yet moved to arrays.
       image: first?.url || "",
       imageTitle: first?.title || first?.alt || "",

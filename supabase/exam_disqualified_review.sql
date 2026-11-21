@@ -199,6 +199,8 @@ BEGIN
             'imageTitle',    q ->> 'imageTitle',
             'media',         COALESCE(q -> 'media', '[]'::jsonb),
             'answerMedia',   COALESCE(q -> 'answerMedia', '[]'::jsonb),
+            'answerValues',  COALESCE(q -> 'answerValues', q -> 'answers', '[]'::jsonb),
+            'correctAnswerIndex', q -> 'correctAnswerIndex',
             'answers',       COALESCE(q -> 'answers', '[]'::jsonb),
             'yourAnswer',    c.answers ->> i::text,
             'correctAnswer', q ->> 'correctAnswer',

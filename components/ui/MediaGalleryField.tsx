@@ -12,6 +12,11 @@ export default function MediaGalleryField({ label, value, onChange, compact = fa
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const media = Array.isArray(value) ? value : [];
+  // Uploads may finish after the admin has typed into another field. Always
+  // append to the latest media prop; using the array captured when the upload
+  // started can restore an older parent state and erase that newer typing.
+  const latestMedia = useRef(media);
+  latestMedia.current = media;
   const patch = (index: number, next: Partial<AssessmentMedia>) =>
     onChange(media.map((item, i) => i === index ? { ...item, ...next } : item));
   const addBlank = () => onChange([...media, { url: "" }]);
@@ -24,7 +29,7 @@ export default function MediaGalleryField({ label, value, onChange, compact = fa
       const uploaded = await Promise.all(files.map(async file => ({
         url: await uploadFile(file), alt: file.name.replace(/\.[^.]+$/, ""),
       })));
-      onChange([...media.filter(item => item.url), ...uploaded]);
+      onChange([...latestMedia.current.filter(item => item.url), ...uploaded]);
     } catch (e) { setError(e instanceof Error ? e.message : "The images did not upload."); }
     finally { setUploading(false); }
   };

@@ -9,7 +9,7 @@ import Spinner from "@/components/ui/Spinner";
 import Input from "@/components/ui/Input";
 import ImageField from "@/components/ui/ImageField";
 import MediaGalleryField from "@/components/ui/MediaGalleryField";
-import { answerMedia, normalizeExamQuestions, questionMedia, type AssessmentMedia } from "@/lib/assessmentMedia";
+import { answerHasContent, answerMedia, normalizeExamQuestions, questionHasContent, questionMedia, type AssessmentMedia } from "@/lib/assessmentMedia";
 import api from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Plus, Trash2, Edit2, Check, X, Image as ImageIcon, Sparkles } from "lucide-react";
@@ -18,6 +18,7 @@ interface Question {
   question: string;
   answers: string[];
   correctAnswer: string;
+  correctAnswerIndex?: number;
   explanation?: string;
   hint?: string;
   image?: string;
@@ -69,6 +70,7 @@ export default function QuizDetailsPage() {
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaForm, setMetaForm] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
+  const [questionError, setQuestionError] = useState("");
 
   const [generatingAI, setGeneratingAI] = useState(false);
   const [aiResult, setAiResult] = useState<{
@@ -77,7 +79,7 @@ export default function QuizDetailsPage() {
   } | null>(null);
 
   const [editingQ, setEditingQ] = useState<number | null>(null);
-  const blankQuestion = (): Question => ({ question: "", answers: ["", "", "", ""], correctAnswer: "", explanation: "", hint: "", media: [], answerMedia: [[], [], [], []] });
+  const blankQuestion = (): Question => ({ question: "", answers: ["", "", "", ""], correctAnswer: "", correctAnswerIndex: -1, explanation: "", hint: "", media: [], answerMedia: [[], [], [], []] });
   const [qForm, setQForm] = useState<Question>(blankQuestion());
   const [addingQ, setAddingQ] = useState(false);
   const [newQ, setNewQ] = useState<Question>(blankQuestion());
@@ -177,6 +179,10 @@ export default function QuizDetailsPage() {
 
   const saveQ = async () => {
     if (!quiz || editingQ === null) return;
+    setQuestionError("");
+    if (!questionHasContent(qForm as unknown as Record<string, unknown>)) return setQuestionError("Add question text or at least one question image.");
+    const answerCount = qForm.answers.filter((answer, index) => answerHasContent(answer, qForm.answerMedia?.[index])).length;
+    if (answerCount < 2 || (qForm.correctAnswerIndex ?? -1) < 0) return setQuestionError("Add at least two text or image options and select the correct option.");
     setSaving(true);
     try {
       const questions = [...(quiz.questions || [])];
@@ -184,6 +190,8 @@ export default function QuizDetailsPage() {
       await api.put(`/update-exam/${quiz._id}`, { questions });
       await load();
       setEditingQ(null);
+    } catch (error) {
+      setQuestionError((error as { response?: { data?: { error?: string } } })?.response?.data?.error || "The question could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -198,7 +206,11 @@ export default function QuizDetailsPage() {
   };
 
   const addQuestion = async () => {
-    if (!quiz || !newQ.question.trim()) return;
+    if (!quiz) return;
+    setQuestionError("");
+    if (!questionHasContent(newQ as unknown as Record<string, unknown>)) return setQuestionError("Add question text or at least one question image.");
+    const answerCount = newQ.answers.filter((answer, index) => answerHasContent(answer, newQ.answerMedia?.[index])).length;
+    if (answerCount < 2 || (newQ.correctAnswerIndex ?? -1) < 0) return setQuestionError("Add at least two text or image options and select the correct option.");
     setSaving(true);
     try {
       const questions = [...(quiz.questions || []), { ...newQ, image: newQ.media?.[0]?.url || "", imageTitle: newQ.media?.[0]?.title || "" }];
@@ -206,6 +218,8 @@ export default function QuizDetailsPage() {
       await load();
       setNewQ(blankQuestion());
       setAddingQ(false);
+    } catch (error) {
+      setQuestionError((error as { response?: { data?: { error?: string } } })?.response?.data?.error || "The question could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -481,24 +495,26 @@ export default function QuizDetailsPage() {
                           className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                       </div>
                       <MediaGalleryField compact label="Question images" value={qForm.media || []}
-                        onChange={(media) => setQForm({ ...qForm, media })} />
+                        onChange={(media) => setQForm((previous) => ({ ...previous, media }))} />
                       {qForm.answers.map((ans, ai) => (
                         <div key={ai} className="space-y-1">
                           <label className="text-xs font-medium text-muted">Option {ai + 1}</label>
-                          <input value={ans} onChange={(e) => { const a = [...qForm.answers]; a[ai] = e.target.value; setQForm({ ...qForm, answers: a }); }}
+                          <input value={ans} onChange={(e) => setQForm((previous) => ({ ...previous,
+                            answers: previous.answers.map((answer, index) => index === ai ? e.target.value : answer) }))}
                             className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
                           <MediaGalleryField compact label={`Images for option ${String.fromCharCode(65 + ai)}`}
                             value={qForm.answerMedia?.[ai] || []} onChange={(media) => {
-                              const next = [...(qForm.answerMedia || qForm.answers.map(() => []))]; next[ai] = media; setQForm({ ...qForm, answerMedia: next });
+                              setQForm((previous) => { const next = [...(previous.answerMedia || previous.answers.map(() => []))]; next[ai] = media; return { ...previous, answerMedia: next }; });
                             }} />
                         </div>
                       ))}
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-muted">Correct answer</label>
-                        <select value={qForm.correctAnswer} onChange={(e) => setQForm({ ...qForm, correctAnswer: e.target.value })}
+                        <select value={String(qForm.correctAnswerIndex ?? -1)} onChange={(e) => setQForm((previous) => ({ ...previous, correctAnswerIndex: Number(e.target.value), correctAnswer: previous.answers[Number(e.target.value)] || "" }))}
                           className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30">
-                          <option value="">Select correct answer</option>
-                          {qForm.answers.filter(Boolean).map((a, ai) => <option key={ai} value={a}>{a}</option>)}
+                          <option value="-1">Select correct answer</option>
+                          {qForm.answers.map((answer, index) => answerHasContent(answer, qForm.answerMedia?.[index])
+                            ? <option key={index} value={index}>{answer.replace(/<[^>]+>/g, "").trim() || `Image option ${String.fromCharCode(65 + index)}`}</option> : null)}
                         </select>
                       </div>
                       <div className="space-y-1">
@@ -516,11 +532,11 @@ export default function QuizDetailsPage() {
                   ) : (
                     <div className="px-4 py-3 space-y-1">
                       {q.answers.map((a, ai) => (
-                        <div key={ai} className={`flex items-center gap-2 text-sm py-1 px-2 rounded-lg ${a === q.correctAnswer ? "bg-emerald-50 text-emerald-800 font-medium" : "text-muted"}`}>
+                        <div key={ai} className={`flex items-center gap-2 text-sm py-1 px-2 rounded-lg ${ai === q.correctAnswerIndex ? "bg-emerald-50 text-emerald-800 font-medium" : "text-muted"}`}>
                           <span className="w-5 h-5 rounded-full border border-current flex items-center justify-center text-xs shrink-0">{String.fromCharCode(65 + ai)}</span>
                           <span>{a.replace(/<[^>]+>/g, " ").trim()}</span>
                           {(q.answerMedia?.[ai] || []).length > 0 && <span className="text-xs text-blue-600">{q.answerMedia?.[ai].length} image(s)</span>}
-                          {a === q.correctAnswer && <Check size={12} className="ml-auto" />}
+                          {ai === q.correctAnswerIndex && <Check size={12} className="ml-auto" />}
                         </div>
                       ))}
                       {q.explanation && (
@@ -546,24 +562,26 @@ export default function QuizDetailsPage() {
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                   </div>
                   <MediaGalleryField compact label="Question images" value={newQ.media || []}
-                    onChange={(media) => setNewQ({ ...newQ, media })} />
+                    onChange={(media) => setNewQ((previous) => ({ ...previous, media }))} />
                   {newQ.answers.map((a, ai) => (
                     <div key={ai} className="space-y-1">
                       <label className="text-xs font-medium text-muted">Option {ai + 1}</label>
-                      <input value={a} onChange={(e) => { const answers = [...newQ.answers]; answers[ai] = e.target.value; setNewQ({ ...newQ, answers }); }}
+                      <input value={a} onChange={(e) => setNewQ((previous) => ({ ...previous,
+                        answers: previous.answers.map((answer, index) => index === ai ? e.target.value : answer) }))}
                         className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
                       <MediaGalleryField compact label={`Images for option ${String.fromCharCode(65 + ai)}`}
                         value={newQ.answerMedia?.[ai] || []} onChange={(media) => {
-                          const next = [...(newQ.answerMedia || newQ.answers.map(() => []))]; next[ai] = media; setNewQ({ ...newQ, answerMedia: next });
+                          setNewQ((previous) => { const next = [...(previous.answerMedia || previous.answers.map(() => []))]; next[ai] = media; return { ...previous, answerMedia: next }; });
                         }} />
                     </div>
                   ))}
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted">Correct answer</label>
-                    <select value={newQ.correctAnswer} onChange={(e) => setNewQ({ ...newQ, correctAnswer: e.target.value })}
+                    <select value={String(newQ.correctAnswerIndex ?? -1)} onChange={(e) => setNewQ((previous) => ({ ...previous, correctAnswerIndex: Number(e.target.value), correctAnswer: previous.answers[Number(e.target.value)] || "" }))}
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30">
-                      <option value="">Select correct option</option>
-                      {newQ.answers.filter(Boolean).map((a, ai) => <option key={ai} value={a}>{a}</option>)}
+                      <option value="-1">Select correct option</option>
+                      {newQ.answers.map((answer, index) => answerHasContent(answer, newQ.answerMedia?.[index])
+                        ? <option key={index} value={index}>{answer.replace(/<[^>]+>/g, "").trim() || `Image option ${String.fromCharCode(65 + index)}`}</option> : null)}
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -583,6 +601,7 @@ export default function QuizDetailsPage() {
                   </div>
                 </div>
               )}
+              {questionError && <p className="text-sm text-danger bg-red-50 border border-red-200 rounded-xl px-4 py-3">{questionError}</p>}
             </div>
           </Card>
         </div>

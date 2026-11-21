@@ -52,6 +52,8 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const divRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const latestValue = useRef(value);
+  latestValue.current = value;
 
   const insertAtCursor = useCallback((text: string) => {
     if (mode === "html") {
@@ -60,7 +62,8 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
       if (!el) return;
       const start = el.selectionStart;
       const end = el.selectionEnd;
-      const next = value.slice(0, start) + text + value.slice(end);
+      const currentValue = latestValue.current;
+      const next = currentValue.slice(0, start) + text + currentValue.slice(end);
       onChange(next);
       requestAnimationFrame(() => {
         el.selectionStart = el.selectionEnd = start + text.length;
@@ -74,7 +77,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) {
         // Just append
-        onChange(value + text);
+        onChange(latestValue.current + text);
         return;
       }
       const range = sel.getRangeAt(0);
@@ -87,15 +90,16 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
       sel.addRange(range);
       onChange(el.innerHTML);
     }
-  }, [mode, value, onChange]);
+  }, [mode, onChange]);
 
   const insertHtmlAtCursor = useCallback((html: string) => {
     if (mode === "html") {
       const el = areaRef.current;
-      if (!el) { onChange(value + html); return; }
+      if (!el) { onChange(latestValue.current + html); return; }
       const start = el.selectionStart;
       const end = el.selectionEnd;
-      onChange(value.slice(0, start) + html + value.slice(end));
+      const currentValue = latestValue.current;
+      onChange(currentValue.slice(0, start) + html + currentValue.slice(end));
       requestAnimationFrame(() => {
         el.selectionStart = el.selectionEnd = start + html.length;
         el.focus();
@@ -108,7 +112,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
     el.focus();
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
-      onChange(value + html);
+      onChange(latestValue.current + html);
       return;
     }
     const range = sel.getRangeAt(0);
@@ -123,7 +127,7 @@ export default function MathEditor({ value, onChange, placeholder = "Type here..
       sel.addRange(range);
     }
     onChange(el.innerHTML);
-  }, [mode, value, onChange]);
+  }, [mode, onChange]);
 
   const uploadAndInsert = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) {

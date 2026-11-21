@@ -11,7 +11,7 @@ import MathEditor from "@/components/ui/MathEditor";
 import api from "@/lib/api";
 import ImageField from "@/components/ui/ImageField";
 import MediaGalleryField from "@/components/ui/MediaGalleryField";
-import type { AssessmentMedia } from "@/lib/assessmentMedia";
+import { answerHasContent, questionHasContent, type AssessmentMedia } from "@/lib/assessmentMedia";
 import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 
 const GRADES = Array.from({ length: 12 }, (_, i) => String(i + 1));
@@ -91,40 +91,48 @@ export default function AddQuizPage() {
   };
   const removeInstruction = (i: number) => setInstructions(instructions.filter((_, idx) => idx !== i));
 
-  const addQuestion = () => setQuestions([...questions, blankQuestion()]);
-  const removeQuestion = (i: number) => setQuestions(questions.filter((_, idx) => idx !== i));
+  const addQuestion = () => setQuestions((previous) => [...previous, blankQuestion()]);
+  const removeQuestion = (i: number) => setQuestions((previous) => previous.filter((_, idx) => idx !== i));
   const toggleQuestion = (i: number) => {
-    const u = [...questions]; u[i] = { ...u[i], expanded: !u[i].expanded }; setQuestions(u);
+    setQuestions((previous) => previous.map((question, index) => index === i
+      ? { ...question, expanded: !question.expanded } : question));
   };
 
   const updateQuestion = (qi: number, field: string, val: string) => {
-    const u = [...questions]; u[qi] = { ...u[qi], [field]: val }; setQuestions(u);
+    setQuestions((previous) => previous.map((question, index) => index === qi
+      ? { ...question, [field]: val } : question));
   };
 
 
   const updateAnswer = (qi: number, ai: number, text: string) => {
-    const u = [...questions];
-    u[qi].answers[ai] = { ...u[qi].answers[ai], text };
-    setQuestions(u);
+    setQuestions((previous) => previous.map((question, index) => index === qi ? {
+      ...question, answers: question.answers.map((answer, answerIndex) => answerIndex === ai ? { ...answer, text } : answer),
+    } : question));
   };
 
   const updateAnswerMedia = (qi: number, ai: number, media: AssessmentMedia[]) => {
-    const u = [...questions];
-    u[qi].answers[ai] = { ...u[qi].answers[ai], media };
-    setQuestions(u);
+    setQuestions((previous) => previous.map((question, index) => index === qi ? {
+      ...question, answers: question.answers.map((answer, answerIndex) => answerIndex === ai ? { ...answer, media } : answer),
+    } : question));
   };
 
   const setCorrectAnswer = (qi: number, ai: number) => {
-    const u = [...questions];
-    u[qi].answers = u[qi].answers.map((a, idx) => ({ ...a, isCorrect: idx === ai }));
-    setQuestions(u);
+    setQuestions((previous) => previous.map((question, index) => index === qi ? {
+      ...question, answers: question.answers.map((answer, answerIndex) => ({ ...answer, isCorrect: answerIndex === ai })),
+    } : question));
   };
 
   const handleSave = async () => {
     setError("");
     if (!title.trim()) return setError("Give this quiz a title.");
-    const validQs = questions.filter((q) => q.question.trim());
+    const validQs = questions.filter((q) => questionHasContent(q as unknown as Record<string, unknown>));
     if (validQs.length === 0) return setError("Add at least one question.");
+
+    const invalidQuestion = validQs.find((q) => {
+      const answers = q.answers.filter((answer) => answerHasContent(answer.text, answer.media));
+      return answers.length < 2 || !answers.some((answer) => answer.isCorrect);
+    });
+    if (invalidQuestion) return setError("Every question needs at least two text or image options and one correct option.");
 
     setSaving(true);
     try {
@@ -152,16 +160,20 @@ export default function AddQuizPage() {
         shuffleQuestions,
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         features: features.split(",").map((f) => f.trim()).filter(Boolean),
-        questions: validQs.map((q) => ({
+        questions: validQs.map((q) => {
+          const answers = q.answers.filter((answer) => answerHasContent(answer.text, answer.media));
+          const correctAnswerIndex = answers.findIndex((answer) => answer.isCorrect);
+          return ({
           question: q.question,
-          answers: q.answers.map((a) => a.text).filter(Boolean),
-          correctAnswer: q.answers.find((a) => a.isCorrect)?.text || q.answers.find((a) => a.text.trim())?.text || "",
+          answers: answers.map((answer) => answer.text),
+          correctAnswerIndex,
+          correctAnswer: answers[correctAnswerIndex]?.text || "",
           explanation: q.explanation,
           media: q.media,
-          answerMedia: q.answers.filter((a) => a.text.trim()).map((a) => a.media),
+          answerMedia: answers.map((answer) => answer.media),
           image: q.media[0]?.url || q.image,
           imageTitle: q.media[0]?.title || q.imageTitle,
-        })),
+        })}),
       };
       await api.post("/add-exam", payload);
       router.push("/assessment");
@@ -364,7 +376,7 @@ export default function AddQuizPage() {
                           land in the same field the spreadsheet importer fills. */}
                       <MediaGalleryField label="Question images" value={q.media}
                         onChange={(media) => {
-                          const u = [...questions]; u[qi] = { ...u[qi], media }; setQuestions(u);
+                          setQuestions((previous) => previous.map((question, index) => index === qi ? { ...question, media } : question));
                         }} />
 
                       {/* Answer options */}

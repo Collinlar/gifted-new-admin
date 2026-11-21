@@ -168,6 +168,7 @@ BEGIN
       'idx',i,'question',q->>'question','options',COALESCE(q->'answers','[]'::jsonb),
       'image',q->>'image','imageTitle',q->>'imageTitle','media',COALESCE(q->'media','[]'::jsonb),
       'answerMedia',COALESCE(q->'answerMedia','[]'::jsonb),
+      'answerValues',COALESCE(q->'answerValues',q->'answers','[]'::jsonb),'correctAnswerIndex',q->'correctAnswerIndex',
       'yourAnswer',given,'correctAnswer',correct,'correct',given IS NOT NULL AND given=correct,'history',changed));
   END LOOP;
   RETURN jsonb_build_object(
