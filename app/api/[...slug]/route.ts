@@ -369,7 +369,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
   // GET /all-exams/:id
   if (p0 === "all-exams" && p1) {
     const { data } = await supabase.from("exams").select("*").or(`id.eq.${p1},mongo_id.eq.${p1}`).single();
-    return ok({ exam: data ? cam(data) : null });
+    return NextResponse.json({ exam: data ? cam(data) : null }, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
+    });
   }
 
   // GET /all-courses-admin-info
@@ -2330,7 +2332,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   const [p0, p1, p2] = slug;
   const denied = guard(req, p0);
   if (denied) return denied;
-  const body = await req.json().catch(() => ({}));
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json() as Record<string, unknown>;
+  } catch {
+    return err("The assessment changes could not be read. Reload the page and try again.");
+  }
 
   // PUT /update-product/:id
   if (p0 === "update-product" && p1) {
@@ -2476,8 +2483,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.endDate     !== undefined) patch.end_date     = body.endDate;
     if (body.location    !== undefined) patch.location    = body.location;
     if (body.isVirtual   !== undefined) patch.is_virtual   = body.isVirtual;
-    if (body.cost        !== undefined) patch.cost        = parseFloat(body.cost) || 0;
-    if (body.capacity    !== undefined) patch.capacity    = body.capacity ? parseInt(body.capacity) : null;
+    if (body.cost        !== undefined) patch.cost        = parseFloat(String(body.cost)) || 0;
+    if (body.capacity    !== undefined) patch.capacity    = body.capacity ? parseInt(String(body.capacity)) : null;
     if (body.type        !== undefined) patch.type        = body.type;
     if (body.image       !== undefined) patch.image       = body.image;
     if (body.link        !== undefined) patch.link        = body.link;
@@ -2650,8 +2657,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.startDate         !== undefined) patch.start_date         = body.startDate;
     if (body.endDate           !== undefined) patch.end_date           = body.endDate;
     if (body.year              !== undefined) patch.year               = String(body.year);
-    if (body.materialCost      !== undefined) patch.material_cost      = parseFloat(body.materialCost) || 0;
-    if (body.assessmentCost    !== undefined) patch.assessment_cost    = parseFloat(body.assessmentCost) || 0;
+    if (body.materialCost      !== undefined) patch.material_cost      = parseFloat(String(body.materialCost)) || 0;
+    if (body.assessmentCost    !== undefined) patch.assessment_cost    = parseFloat(String(body.assessmentCost)) || 0;
     if (body.link              !== undefined) patch.link               = body.link;
     if (body.customizableButton !== undefined) patch.customizable_button = body.customizableButton;
     if (body.type              !== undefined) patch.type               = body.type;
@@ -2668,6 +2675,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
   // PUT /update-exam/:id
   if (p0 === "update-exam" && p1) {
     const patch: Record<string, unknown> = {};
+    let requestedQuestionCount: number | null = null;
     if (body.title              !== undefined) patch.title               = body.title;
     if (body.description        !== undefined) patch.description         = body.description;
     if (body.numberOfQuestions  !== undefined) patch.number_of_questions = body.numberOfQuestions;
@@ -2687,6 +2695,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
       const questions = normalizeExamQuestions(body.questions);
       patch.questions = questions;
       patch.number_of_questions = questions.length;
+      requestedQuestionCount = questions.length;
     }
     // Instructions could be written at creation but never edited afterwards,
     // because this patch never carried them.
@@ -2700,10 +2709,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     // would reject rather than failing the whole update.
     if (typeof body.mode === "string" && EXAM_MODES.includes(body.mode)) patch.mode = body.mode;
     if (body.hintsEnabled       !== undefined) patch.hints_enabled       = body.hintsEnabled;
+    if (Object.keys(patch).length === 0) return err("No assessment changes were received. Reload the page and try again.");
     patch.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("exams").update(patch).or(`id.eq.${p1},mongo_id.eq.${p1}`).select().single();
     if (error) return err(error.message);
-    return ok({ exam: cam(data) });
+    const storedQuestions = Array.isArray(data?.questions) ? data.questions.length : 0;
+    if (requestedQuestionCount !== null && storedQuestions !== requestedQuestionCount) {
+      return err(`The database returned ${storedQuestions} questions after saving ${requestedQuestionCount}. Reload and try again.`, 409);
+    }
+    return ok({ exam: cam(data), savedQuestionCount: requestedQuestionCount });
   }
 
   // PUT /update-user/:id

@@ -71,6 +71,7 @@ export default function QuizDetailsPage() {
   const [metaForm, setMetaForm] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [questionError, setQuestionError] = useState("");
+  const [questionNotice, setQuestionNotice] = useState("");
 
   const [generatingAI, setGeneratingAI] = useState(false);
   const [aiResult, setAiResult] = useState<{
@@ -89,7 +90,7 @@ export default function QuizDetailsPage() {
     if (!id) { router.push("/assessment"); return; }
     setLoading(true);
     try {
-      const res = await api.get(`/all-exams/${id}`);
+      const res = await api.get(`/all-exams/${id}`, { params: { fresh: Date.now() } });
       const exam = res.data.exam as Quiz;
       setQuiz({ ...exam, questions: normalizeExamQuestions(exam.questions) as unknown as Question[] });
     } finally {
@@ -180,6 +181,7 @@ export default function QuizDetailsPage() {
   const saveQ = async () => {
     if (!quiz || editingQ === null) return;
     setQuestionError("");
+    setQuestionNotice("");
     if (!questionHasContent(qForm as unknown as Record<string, unknown>)) return setQuestionError("Add question text or at least one question image.");
     const answerCount = qForm.answers.filter((answer, index) => answerHasContent(answer, qForm.answerMedia?.[index])).length;
     if (answerCount < 2 || (qForm.correctAnswerIndex ?? -1) < 0) return setQuestionError("Add at least two text or image options and select the correct option.");
@@ -187,11 +189,14 @@ export default function QuizDetailsPage() {
     try {
       const questions = [...(quiz.questions || [])];
       questions[editingQ] = { ...qForm, image: qForm.media?.[0]?.url || "", imageTitle: qForm.media?.[0]?.title || "" };
-      await api.put(`/update-exam/${quiz._id}`, { questions });
-      await load();
+      const response = await api.put(`/update-exam/${quiz._id}`, { questions });
+      const saved = normalizeExamQuestions(response.data?.exam?.questions) as unknown as Question[];
+      if (saved.length !== questions.length) throw new Error(`Expected ${questions.length} questions but the database returned ${saved.length}.`);
+      setQuiz({ ...response.data.exam, questions: saved });
       setEditingQ(null);
+      setQuestionNotice(`Question saved. This assessment has ${saved.length} question${saved.length === 1 ? "" : "s"}.`);
     } catch (error) {
-      setQuestionError((error as { response?: { data?: { error?: string } } })?.response?.data?.error || "The question could not be saved.");
+      setQuestionError((error as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error || (error as Error)?.message || "The question could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -208,18 +213,22 @@ export default function QuizDetailsPage() {
   const addQuestion = async () => {
     if (!quiz) return;
     setQuestionError("");
+    setQuestionNotice("");
     if (!questionHasContent(newQ as unknown as Record<string, unknown>)) return setQuestionError("Add question text or at least one question image.");
     const answerCount = newQ.answers.filter((answer, index) => answerHasContent(answer, newQ.answerMedia?.[index])).length;
     if (answerCount < 2 || (newQ.correctAnswerIndex ?? -1) < 0) return setQuestionError("Add at least two text or image options and select the correct option.");
     setSaving(true);
     try {
       const questions = [...(quiz.questions || []), { ...newQ, image: newQ.media?.[0]?.url || "", imageTitle: newQ.media?.[0]?.title || "" }];
-      await api.put(`/update-exam/${quiz._id}`, { questions });
-      await load();
+      const response = await api.put(`/update-exam/${quiz._id}`, { questions });
+      const saved = normalizeExamQuestions(response.data?.exam?.questions) as unknown as Question[];
+      if (saved.length !== questions.length) throw new Error(`Expected ${questions.length} questions but the database returned ${saved.length}.`);
+      setQuiz({ ...response.data.exam, questions: saved });
       setNewQ(blankQuestion());
       setAddingQ(false);
+      setQuestionNotice(`Question saved. This assessment now has ${saved.length} questions.`);
     } catch (error) {
-      setQuestionError((error as { response?: { data?: { error?: string } } })?.response?.data?.error || "The question could not be saved.");
+      setQuestionError((error as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error || (error as Error)?.message || "The question could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -446,7 +455,7 @@ export default function QuizDetailsPage() {
                     {generatingAI ? "Generating..." : "Generate AI content"}
                   </Button>
                 )}
-                <Button size="sm" onClick={() => setAddingQ(true)}><Plus size={13} /> Add question</Button>
+                <Button size="sm" onClick={() => { setAddingQ(true); setQuestionError(""); setQuestionNotice(""); }}><Plus size={13} /> New question</Button>
               </div>
             )}
           >
@@ -596,12 +605,13 @@ export default function QuizDetailsPage() {
                       className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none" />
                   </div>
                   <div className="flex gap-2 pt-2">
-                    <Button size="sm" onClick={addQuestion} disabled={saving}>{saving ? "Saving..." : "Add question"}</Button>
+                    <Button size="sm" onClick={addQuestion} disabled={saving}>{saving ? "Saving question..." : "Save question"}</Button>
                     <Button variant="ghost" size="sm" onClick={() => setAddingQ(false)}>Cancel</Button>
                   </div>
                 </div>
               )}
               {questionError && <p className="text-sm text-danger bg-red-50 border border-red-200 rounded-xl px-4 py-3">{questionError}</p>}
+              {questionNotice && <p className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">{questionNotice}</p>}
             </div>
           </Card>
         </div>
