@@ -87,10 +87,12 @@ export function normalizeExamQuestions(value: unknown): Record<string, unknown>[
     const originalAnswerMedia = answerMedia(question, originalAnswers.length);
     const existingValues = Array.isArray(question.answerValues) && question.answerValues.length === originalAnswers.length
       ? question.answerValues.map((value) => String(value ?? "")) : originalAnswers;
+    const existingOptionIds = Array.isArray(question.optionIds) && question.optionIds.length === originalAnswers.length
+      ? question.optionIds.map((value) => String(value ?? "")) : [];
     const prepared = originalAnswers.map((answer, index) => {
       const clean = splitLegacyImages(answer);
       const media = normalizeMedia([...originalAnswerMedia[index], ...clean.media]);
-      return { answer: clean.content, media, previousValue: existingValues[index], original: answer, originalIndex: index };
+      return { answer: clean.content, media, previousValue: existingValues[index], optionId: existingOptionIds[index], original: answer, originalIndex: index };
     }).filter((item) => !!item.answer || item.media.length > 0);
     const cleanedAnswers = prepared.map((item) => item.answer);
     const storedCorrectIndex = question.correctAnswerIndex;
@@ -103,6 +105,9 @@ export function normalizeExamQuestions(value: unknown): Record<string, unknown>[
     if (correctIndex < 0 && prepared.length === 1) correctIndex = 0;
     const values = prepared.map((item, index) => item.answer ||
       (item.previousValue.startsWith(MEDIA_OPTION_VALUE) ? item.previousValue : `${MEDIA_OPTION_VALUE}${index + 1}__`));
+    // Option ids are the durable values submitted by new exam sittings. They
+    // remain stable when display text, punctuation, HTML or images are edited.
+    const optionIds = prepared.map((item) => item.optionId || `option_${item.originalIndex + 1}`);
     const media = normalizeMedia([...questionMedia(question), ...prompt.media]);
     const first = media[0];
     return {
@@ -110,9 +115,11 @@ export function normalizeExamQuestions(value: unknown): Record<string, unknown>[
       question: prompt.content,
       answers: cleanedAnswers,
       answerValues: values,
+      optionIds,
       correctAnswerIndex: correctIndex,
       correctAnswer: correctIndex >= 0 ? values[correctIndex] : rawCorrect,
       correctValue: correctIndex >= 0 ? values[correctIndex] : rawCorrect,
+      correctOptionId: correctIndex >= 0 ? optionIds[correctIndex] : "",
       media,
       answerMedia: prepared.map((item) => item.media),
       // Backwards compatibility for clients that have not yet moved to arrays.

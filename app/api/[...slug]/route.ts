@@ -1968,6 +1968,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok(data);
   }
 
+  // POST /recalculate-session-scores — preview by default. Applying requires
+  // an explicit flag and a written reason; the RPC audits every changed row.
+  if (p0 === "recalculate-session-scores") {
+    const apply = body.apply === true;
+    const reason = String(body.reason || "").trim();
+    if (apply && reason.length < 3) return err("Give a reason before applying score corrections.");
+    const { data, error } = await supabase.rpc("admin_recalculate_session_scores", {
+      p_session_id: body.sessionId,
+      p_actor: actorFrom(req),
+      p_reason: reason,
+      p_apply: apply,
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
   // POST /dismiss-announcement
   if (p0 === "dismiss-announcement") {
     const { error } = await supabase.from("user_announcement_dismissals").upsert({

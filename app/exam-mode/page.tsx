@@ -304,6 +304,7 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
   // Bumped after a certificate action so the tab remounts and refetches
   const [certVersion, setCertVersion] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [repairBusy, setRepairBusy] = useState(false);
 
   // Pending action awaiting a reason
   const [ask, setAsk] = useState<null | {
@@ -488,6 +489,27 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
     XLSX.writeFile(wb, `${session?.sessionCode || "exam"}-results.xlsx`);
   };
 
+  const repairScores = async () => {
+    setRepairBusy(true); setError(""); setNotice("");
+    try {
+      const preview = await api.post("/recalculate-session-scores", { sessionId, apply: false });
+      const changed = Number(preview.data?.changed || 0);
+      if (!changed) {
+        setNotice("All submitted online scores already match this sitting's frozen answer key.");
+        return;
+      }
+      const sample = (preview.data?.candidates || []).slice(0, 5)
+        .map((c: { name: string; before: number; after: number }) => `${c.name}: ${c.before} → ${c.after}`).join("\n");
+      if (!window.confirm(`${changed} online score${changed === 1 ? "" : "s"} would change.\n\n${sample}${changed > 5 ? "\n…and others" : ""}\n\nContinue to record an audited correction?`)) return;
+      const reason = window.prompt("Reason for recalculating these scores:", "Answer key verified against the frozen sitting paper");
+      if (!reason?.trim()) return;
+      const applied = await api.post("/recalculate-session-scores", { sessionId, apply: true, reason: reason.trim() });
+      setNotice(`${applied.data.changed} online score${applied.data.changed === 1 ? "" : "s"} recalculated and audited.`);
+      await load();
+    } catch (e) { setError(serverMessage(e, "Could not check or recalculate the scores.")); }
+    finally { setRepairBusy(false); }
+  };
+
   if (loading) {
     return <AuthGuard><DashboardShell title="Exam Mode"><Spinner text="Loading this sitting..." /></DashboardShell></AuthGuard>;
   }
@@ -628,6 +650,15 @@ function SessionDetail({ sessionId, onBack }: { sessionId: string; onBack: () =>
                   onChange={(v) => request("Change answer breakdown", "set_breakdown", "session", { flag: v })}
                   hint="Reveals the correct answers, so only turn this on once the paper is retired."
                 />
+              </div>
+              <div className="pt-3 border-t border-border flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <p className="text-sm font-medium text-ink">Score integrity check</p>
+                  <p className="text-xs text-muted mt-0.5">Previews online scores against this sitting&apos;s frozen answer key before changing anything. Paper imports are never recalculated.</p>
+                </div>
+                <Button size="sm" variant="secondary" onClick={repairScores} disabled={repairBusy}>
+                  <ShieldCheck size={13} /> {repairBusy ? "Checking scores..." : "Check scores"}
+                </Button>
               </div>
             </div>
           </Card>

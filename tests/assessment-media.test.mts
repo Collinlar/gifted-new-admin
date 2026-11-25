@@ -19,6 +19,8 @@ assert.equal((normalized.answerValues as string[]).length, 2);
 assert.notEqual((normalized.answerValues as string[])[0], (normalized.answerValues as string[])[1]);
 assert.equal(normalized.correctAnswerIndex, 1);
 assert.equal(normalized.correctAnswer, (normalized.answerValues as string[])[1]);
+assert.deepEqual(normalized.optionIds, ["option_1", "option_2"]);
+assert.equal(normalized.correctOptionId, "option_2");
 
 const [legacyText] = normalizeExamQuestions([{
   question: "2 + 2?",
