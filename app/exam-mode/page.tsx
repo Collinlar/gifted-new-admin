@@ -33,6 +33,9 @@ interface Session {
   resultsShowBreakdown: boolean;
   certificateMode: "none" | "manual" | "on_publish" | "on_submit";
   certificateBands: Band[];
+  certificateAccessPolicy: "free" | "included" | "separate" | "manual";
+  certificateFeeAmount?: number | null;
+  certificateCurrency: string;
   counts?: Record<string, number>;
 }
 
@@ -45,6 +48,15 @@ interface Certificate {
   band?: string; issuedAt: string; issuedBy: string;
   revokedAt?: string | null; revokeReason?: string | null;
   snapshot: Record<string, string | number>;
+}
+
+type EntitlementStatus = "pending" | "paid" | "waived" | "approved" | "refunded";
+
+interface CertificateEntitlement {
+  id: string; sessionId: string; candidateId: string; status: EntitlementStatus;
+  amountDue?: number | null; amountPaid?: number | null; currency: string;
+  paymentReference?: string | null; paidAt?: string | null;
+  decidedAt: string; decidedBy: string; note?: string | null;
 }
 
 // cam() on the API side recurses into nested objects, so the snapshot arrives
@@ -101,6 +113,15 @@ const STATUS_META: Record<Candidate["status"], { label: string; cls: string }> =
   disqualified: { label: "Stopped",     cls: "bg-red-50 text-danger border-red-200" },
 };
 
+const ENTITLEMENT_META: Record<EntitlementStatus | "not_required", { label: string; cls: string }> = {
+  not_required: { label: "No payment needed", cls: "bg-slate-50 text-slate-700 border-slate-200" },
+  pending:      { label: "Awaiting payment", cls: "bg-amber-50 text-amber-800 border-amber-200" },
+  paid:         { label: "Paid", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  waived:       { label: "Fee waived", cls: "bg-blue-50 text-blue-700 border-blue-200" },
+  approved:     { label: "Approved", cls: "bg-violet-50 text-violet-700 border-violet-200" },
+  refunded:     { label: "Refunded", cls: "bg-red-50 text-danger border-red-200" },
+};
+
 // Plain descriptions so a log entry reads the same to an invigilator, a parent
 // and a examinations board, with no decoding needed.
 const EVENT_LABEL: Record<string, string> = {
@@ -148,6 +169,7 @@ const ACTION_LABEL: Record<string, string> = {
   "certificate.issue":        "Issued certificates",
   "certificate.revoke":       "Withdrew a certificate",
   "certificate.reissue":      "Reissued a certificate",
+  "certificate.entitlement":  "Changed certificate payment or approval",
 };
 
 // Actions that change a candidate's standing or the clock always need a written
@@ -1530,8 +1552,15 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
 }) {
   const [templates, setTemplates] = useState<CertTemplate[]>([]);
   const [certs, setCerts] = useState<Certificate[]>([]);
+  const [entitlements, setEntitlements] = useState<CertificateEntitlement[]>([]);
   const [bands, setBands] = useState<Band[]>(session?.certificateBands || []);
   const [mode, setMode] = useState<Session["certificateMode"]>(session?.certificateMode || "none");
+  const [accessPolicy, setAccessPolicy] = useState<Session["certificateAccessPolicy"]>(session?.certificateAccessPolicy || "free");
+  const [feeAmount, setFeeAmount] = useState(String(session?.certificateFeeAmount ?? ""));
+  const [currency, setCurrency] = useState(session?.certificateCurrency || "GHS");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [paymentFilter, setPaymentFilter] = useState("all");
+  const [paymentSearch, setPaymentSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1544,12 +1573,14 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
 
   const load = useCallback(async () => {
     try {
-      const [t, c] = await Promise.all([
+      const [t, c, e] = await Promise.all([
         api.get("/certificate-templates"),
         api.get(`/session-certificates/${session?.id}`),
+        api.get(`/certificate-entitlements/${session?.id}`),
       ]);
       setTemplates(t.data.templates || []);
       setCerts(c.data.certificates || []);
+      setEntitlements(e.data.entitlements || []);
     } catch { /* leave as is */ }
     finally { setLoading(false); }
   }, [session?.id]);
@@ -1564,6 +1595,21 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
       });
       onChanged();
     } catch (e) { setError(serverMessage(e, "Could not save those settings.")); }
+  };
+
+  const saveAccessSettings = async (
+    nextPolicy = accessPolicy, nextAmount = feeAmount, nextCurrency = currency
+  ) => {
+    setError(""); setNotice("");
+    try {
+      await api.put(`/update-exam-session/${session?.id}`, {
+        certificateAccessPolicy: nextPolicy,
+        certificateFeeAmount: nextAmount,
+        certificateCurrency: nextCurrency,
+      });
+      setNotice("Certificate access settings saved.");
+      onChanged();
+    } catch (e) { setError(serverMessage(e, "Could not save the certificate access settings.")); }
   };
 
   const addBand = () => {
@@ -1585,6 +1631,19 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
 
   const liveCerts = certs.filter((c) => !c.revokedAt);
   const byCandidate = Object.fromEntries(liveCerts.map((c) => [c.candidateId, c]));
+  const entitlementByCandidate = Object.fromEntries(entitlements.map((e) => [e.candidateId, e]));
+
+  const effectiveStatus = (candidateId: string): EntitlementStatus | "not_required" => {
+    if (accessPolicy === "free" || accessPolicy === "included") return "not_required";
+    return entitlementByCandidate[candidateId]?.status || "pending";
+  };
+  const paymentAllows = (candidateId: string) => {
+    const status = effectiveStatus(candidateId);
+    if (status === "not_required") return true;
+    return accessPolicy === "manual"
+      ? ["paid", "waived", "approved"].includes(status)
+      : ["paid", "waived"].includes(status);
+  };
 
   // A band only works if its design still exists. One that points at nothing
   // cannot issue anyone, so it must not be counted or silently attempted.
@@ -1596,12 +1655,54 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
   const eligible = candidates.filter((c) => {
     if (c.status !== "submitted" || c.includeInResults === false) return false;
     if (byCandidate[c.id]) return false;
+    if (!paymentAllows(c.id)) return false;
     const pct = c.totalQuestions ? Math.round(((c.score ?? 0) / c.totalQuestions) * 100) : 0;
     const matched = bands
       .filter((b) => b.minPercent <= pct)
       .sort((a, b) => b.minPercent - a.minPercent)[0];
     return !!matched && bandUsable(matched);
   });
+
+  const paymentCandidates = candidates.filter((c) => {
+    const q = paymentSearch.trim().toLowerCase();
+    const status = effectiveStatus(c.id);
+    return (!q || c.fullName.toLowerCase().includes(q) || (c.school || "").toLowerCase().includes(q))
+      && (paymentFilter === "all" || paymentFilter === status);
+  });
+  const statusCounts = candidates.reduce<Record<string, number>>((out, c) => {
+    const status = effectiveStatus(c.id);
+    out[status] = (out[status] || 0) + 1;
+    return out;
+  }, {});
+
+  const setEntitlement = async (status: EntitlementStatus) => {
+    if (selected.length === 0) return;
+    let reference = "";
+    if (status === "paid") {
+      const entered = window.prompt("Optional payment reference (mobile money, receipt or transaction ID):", "");
+      if (entered === null) return;
+      reference = entered.trim();
+    }
+    let note = "";
+    if (["waived", "approved", "refunded"].includes(status)) {
+      const entered = window.prompt(
+        status === "refunded" ? "Reason for the refund:" : "Reason for this approval or waiver:", ""
+      );
+      if (entered === null || !entered.trim()) return;
+      note = entered.trim();
+    }
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const res = await api.post("/set-certificate-entitlements", {
+        sessionId: session?.id, candidateIds: selected, status,
+        reference, note, amountPaid: status === "paid" ? feeAmount : null,
+      });
+      setNotice(`${res.data.changed} candidate${res.data.changed === 1 ? "" : "s"} updated${res.data.issued ? `; ${res.data.issued} certificate${res.data.issued === 1 ? "" : "s"} issued automatically` : ""}.`);
+      setSelected([]);
+      await load(); onChanged();
+    } catch (e) { setError(serverMessage(e, "Could not update certificate access.")); }
+    finally { setBusy(false); }
+  };
 
   const issue = async (reason: string) => {
     setBusy(true); setError(""); setNotice("");
@@ -1702,6 +1803,118 @@ function CertificatesTab({ session, candidates, onChanged, onRequest }: {
             then come back and attach it to a score band.
           </p>
         </div>
+      )}
+
+      <Card title="Certificate access and payment">
+        <div className="space-y-4">
+          <p className="text-sm text-muted">
+            This controls who may receive a certificate. It is separate from the exam registration fee
+            and from when certificates are issued.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {([
+              ["free", "Free certificate", "Every academically eligible candidate may receive one."],
+              ["included", "Included with exam", "Admission to this sitting already covers the certificate."],
+              ["separate", "Separate certificate fee", "Only candidates marked paid or waived may receive one."],
+              ["manual", "Manual approval", "Each candidate must be approved, paid or waived."],
+            ] as const).map(([value, label, help]) => (
+              <button key={value} onClick={() => {
+                setAccessPolicy(value); saveAccessSettings(value, feeAmount, currency);
+              }} className={`text-left px-3 py-2.5 rounded-xl border transition-colors ${
+                accessPolicy === value ? "border-primary bg-primary-light/40" : "border-border hover:border-primary/50"
+              }`}>
+                <p className={`text-sm font-medium ${accessPolicy === value ? "text-primary" : "text-ink"}`}>{label}</p>
+                <p className="text-xs text-muted mt-0.5">{help}</p>
+              </button>
+            ))}
+          </div>
+          {accessPolicy === "separate" && (
+            <div className="flex items-end gap-3 flex-wrap border border-border rounded-xl p-3 bg-surface/40">
+              <label className="text-xs text-muted">
+                Certificate fee
+                <input type="number" min={0} step="0.01" value={feeAmount}
+                  onChange={(e) => setFeeAmount(e.target.value)}
+                  onBlur={() => saveAccessSettings(accessPolicy, feeAmount, currency)}
+                  className="block mt-1 w-36 border border-border rounded-lg px-3 py-2 text-sm bg-card focus:outline-none focus:border-primary" />
+              </label>
+              <label className="text-xs text-muted">
+                Currency
+                <input value={currency} maxLength={8}
+                  onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                  onBlur={() => saveAccessSettings(accessPolicy, feeAmount, currency)}
+                  className="block mt-1 w-28 border border-border rounded-lg px-3 py-2 text-sm bg-card focus:outline-none focus:border-primary" />
+              </label>
+              <p className="text-xs text-muted pb-2">This records eligibility; it does not charge a card automatically.</p>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {(accessPolicy === "separate" || accessPolicy === "manual") && (
+        <Card title="Candidate certificate access" padding={false}>
+          <div className="p-4 border-b border-border space-y-3">
+            <div className="flex flex-wrap gap-2 text-xs">
+              {(["all", "pending", "paid", "waived", "approved", "refunded"] as const).map((status) => (
+                <button key={status} onClick={() => setPaymentFilter(status)}
+                  className={`px-2.5 py-1.5 rounded-lg border ${paymentFilter === status
+                    ? "border-primary bg-primary-light/40 text-primary" : "border-border text-muted"}`}>
+                  {status === "all" ? `All (${candidates.length})`
+                    : `${ENTITLEMENT_META[status].label} (${statusCounts[status] || 0})`}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <div className="relative flex-1 min-w-[14rem]">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
+                <input value={paymentSearch} onChange={(e) => setPaymentSearch(e.target.value)}
+                  placeholder="Search candidates by name or school"
+                  className="w-full pl-8 pr-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:border-primary" />
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(
+                paymentCandidates.every((candidate) => selected.includes(candidate.id))
+                  ? selected.filter((id) => !paymentCandidates.some((candidate) => candidate.id === id))
+                  : Array.from(new Set([...selected, ...paymentCandidates.map((candidate) => candidate.id)]))
+              )} disabled={paymentCandidates.length === 0}>
+                {paymentCandidates.every((candidate) => selected.includes(candidate.id)) ? "Clear shown" : "Select shown"}
+              </Button>
+              <Button size="sm" onClick={() => setEntitlement(accessPolicy === "manual" ? "approved" : "paid")}
+                disabled={!selected.length || busy}>
+                <CheckCircle2 size={13} /> {accessPolicy === "manual" ? "Approve" : "Mark paid"}
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => setEntitlement("waived")}
+                disabled={!selected.length || busy}>Waive fee</Button>
+              <Button size="sm" variant="ghost" onClick={() => setEntitlement("pending")}
+                disabled={!selected.length || busy}>Set pending</Button>
+              <Button size="sm" variant="ghost" onClick={() => setEntitlement("refunded")}
+                disabled={!selected.length || busy}>Refund</Button>
+            </div>
+          </div>
+          <div className="max-h-[25rem] overflow-y-auto divide-y divide-border">
+            {paymentCandidates.length === 0 ? (
+              <p className="text-sm text-muted text-center py-10">No candidates match this filter.</p>
+            ) : paymentCandidates.map((candidate) => {
+              const status = effectiveStatus(candidate.id);
+              const entitlement = entitlementByCandidate[candidate.id];
+              return (
+                <label key={candidate.id} className="px-4 py-3 flex items-center gap-3 hover:bg-surface/50 cursor-pointer">
+                  <input type="checkbox" checked={selected.includes(candidate.id)}
+                    onChange={(e) => setSelected((current) => e.target.checked
+                      ? [...current, candidate.id] : current.filter((id) => id !== candidate.id))} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-ink truncate">{candidate.fullName}</p>
+                    <p className="text-xs text-muted truncate">
+                      {candidate.school || "No school"}
+                      {entitlement?.paymentReference ? ` · Ref: ${entitlement.paymentReference}` : ""}
+                    </p>
+                  </div>
+                  <span className={`px-2 py-1 rounded-lg text-xs font-medium border ${ENTITLEMENT_META[status].cls}`}>
+                    {ENTITLEMENT_META[status].label}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </Card>
       )}
 
       {/* When they go out */}

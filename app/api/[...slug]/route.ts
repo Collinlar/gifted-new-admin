@@ -864,6 +864,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     return ok({ certificates: rows(data) });
   }
 
+  // GET /certificate-entitlements/:sessionId — explicit payment/approval
+  // decisions. Candidates without a row are pending when the sitting requires
+  // one, and not-required for free or bundled certificates.
+  if (p0 === "certificate-entitlements" && p1) {
+    const data = await fetchAll(() => supabase
+      .from("exam_certificate_entitlements")
+      .select("*")
+      .eq("session_id", p1)
+      .order("updated_at", { ascending: false }));
+    return ok({ entitlements: rows(data) });
+  }
+
   // GET /exam-transcript/:candidateId — everything needed to settle a challenge
   if (p0 === "exam-transcript" && p1) {
     const { data, error } = await supabase.rpc("admin_get_transcript", { p_candidate_id: p1 });
@@ -1777,6 +1789,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     return ok(data);
   }
 
+  // POST /set-certificate-entitlements
+  if (p0 === "set-certificate-entitlements") {
+    const ids = Array.isArray(body.candidateIds) ? body.candidateIds : [];
+    if (!body.sessionId || ids.length === 0 || ids.length > 1000) {
+      return err("Select between 1 and 1000 candidates.");
+    }
+    const { data, error } = await supabase.rpc("admin_set_certificate_entitlements", {
+      p_session_id: body.sessionId,
+      p_candidate_ids: ids,
+      p_status: body.status,
+      p_actor: actorFrom(req),
+      p_reference: body.reference || null,
+      p_note: body.note || null,
+      p_amount_paid: body.amountPaid === "" || body.amountPaid == null ? null : Number(body.amountPaid),
+    });
+    if (error) return err(error.message);
+    return ok(data);
+  }
+
   // POST /revoke-certificate
   if (p0 === "revoke-certificate") {
     const { error } = await supabase.rpc("admin_revoke_certificate", {
@@ -2578,6 +2609,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ slug
     if (body.maxTabSwitches         !== undefined) patch.max_tab_switches          = body.maxTabSwitches;
     if (body.certificateMode        !== undefined) patch.certificate_mode          = body.certificateMode;
     if (body.certificateBands       !== undefined) patch.certificate_bands         = body.certificateBands;
+    if (body.certificateAccessPolicy !== undefined) patch.certificate_access_policy = body.certificateAccessPolicy;
+    if (body.certificateFeeAmount   !== undefined) patch.certificate_fee_amount    = body.certificateFeeAmount === "" ? null : Number(body.certificateFeeAmount);
+    if (body.certificateCurrency    !== undefined) patch.certificate_currency      = String(body.certificateCurrency || "GHS").trim().toUpperCase().slice(0, 8);
 
     const { data, error } = await supabase.from("exam_sessions").update(patch).eq("id", p1).select().single();
     if (error) return err(error.message);
